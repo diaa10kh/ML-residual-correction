@@ -7,7 +7,7 @@
 #SBATCH --job-name=mgs_rigid
 #SBATCH --ntasks=1
 #SBATCH --time=50:00:00
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=5000
 #SBATCH --array=1-999%40
 #SBATCH --output=logs/slurm_%A_%a.out
@@ -21,7 +21,7 @@ set -e
 
 kuerzel=${MGS_CLUSTER_USER:-cda6556}
 institut=${MGS_CLUSTER_INSTITUTE:-gbt}
-cpus=${SLURM_CPUS_PER_TASK:-4}
+cpus=${SLURM_CPUS_PER_TASK:-8}
 userroutine=${MGS_USERROUTINE:-vumat-hypo-2020-hst.for}
 project_name=${MGS_PROJECT_NAME:-MGS_Rigid_Correction}
 

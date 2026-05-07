@@ -306,6 +306,8 @@ The SLURM template is:
 scripts/03_submit_slurm_array.sh
 ```
 
+The current Phase 0 template requests `8` CPUs per task and `5000 MB` per CPU.
+
 It follows the working TUHH cluster pattern from your earlier project: upload
 all `.inp` files into one flat remote directory, submit an oversized guarded
 array, copy each selected input to a job-specific `/work/gbt/...` directory,
@@ -323,15 +325,37 @@ Submit after the `.inp` files exist:
 ./scripts/12_cluster_transfer_submit_fetch.sh submit_all 0 0
 ```
 
+For the current Phase 0 cluster run, use the Phase 0 metadata and remote folder:
+
+```bash
+MGS_ROOT_REMOTE="/work/gbt/cda6556/ML residual correction Phase0" \
+MGS_MATRIX_CSV="data/extracted/run_metadata_phase0.csv" \
+bash scripts/12_cluster_transfer_submit_fetch.sh submit_all
+```
+
 Fetch results later:
 
 ```bash
 ./scripts/12_cluster_transfer_submit_fetch.sh fetch 0 0
 ```
 
-On Windows, `scripts/00_submit_mgs_jobs.cmd` calls the WSL helper and then opens
-the cluster terminal. Set `MGS_CLUSTER_PASSWORD` first if you do not want to edit
-the script.
+For the current Phase 0 folder:
+
+```bash
+MGS_ROOT_REMOTE="/work/gbt/cda6556/ML residual correction Phase0" \
+MGS_MATRIX_CSV="data/extracted/run_metadata_phase0.csv" \
+bash scripts/12_cluster_transfer_submit_fetch.sh fetch
+```
+
+The cluster scripts use standard SSH public-key authentication:
+
+```bash
+ssh cda6556@hpc4.rz.tuhh.de
+```
+
+No password, `sshpass`, or `StrictHostKeyChecking=no` is used. The helper
+`scripts/13_cluster_open_terminal.sh` opens an interactive shell directly in the
+configured remote work folder.
 
 ## ODB Stage
 
