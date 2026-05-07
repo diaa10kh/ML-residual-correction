@@ -41,7 +41,6 @@ RAW_RESPONSE_FEATURES = [
 DYNAMIC_FEATURES = [
     "energy_ratio",
     "energy_ratio_cummax",
-    "stable_dt",
     "oscillation_index_qb",
     "oscillation_index_qs",
 ]
@@ -521,7 +520,7 @@ def add_curve_features(rows):
 def resample_run(run_rows, metadata, eta_grid):
     D_m = as_float(metadata["D_m"])
     L_m = as_float(metadata["L_m"])
-    numeric_columns = ["qb_MPa", "qs_kPa", "ALLKE", "ALLIE", "stable_dt", "time_s", "walltime_h"]
+    numeric_columns = ["qb_MPa", "qs_kPa", "ALLKE", "ALLIE", "time_s", "walltime_h"]
     clean = []
     for row in run_rows:
         z_m = safe_float(row.get("z_m"))

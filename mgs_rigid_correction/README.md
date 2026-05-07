@@ -356,7 +356,7 @@ data/extracted/per_run_csv/{run_id}.csv
 Required columns are:
 
 ```text
-run_id, scenario_id, S, z_m, qb_MPa, qs_kPa, ALLKE, ALLIE, stable_dt, time_s, walltime_h
+run_id, scenario_id, S, z_m, qb_MPa, qs_kPa, ALLKE, ALLIE, time_s, walltime_h
 ```
 
 ## Important Modelling Rules

@@ -4,7 +4,6 @@ import csv
 import json
 import math
 import os
-import re
 import sys
 
 PY2 = sys.version_info[0] < 3
@@ -79,21 +78,6 @@ def value_at(series, time_value):
     return best_value
 
 
-def parse_stable_dt(sta_path):
-    if not sta_path or not os.path.exists(sta_path):
-        return ''
-    pattern = re.compile(r'[-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?')
-    last_value = ''
-    with open(sta_path, 'r') as handle:
-        for line in handle:
-            lower = line.lower()
-            if 'stable' in lower and ('time' in lower or 'increment' in lower):
-                numbers = pattern.findall(line)
-                if numbers:
-                    last_value = numbers[-1]
-    return last_value
-
-
 def safe_float(value, default=0.0):
     try:
         if value == '':
@@ -116,7 +100,6 @@ def write_rows(path, rows):
         'qs_kPa',
         'ALLKE',
         'ALLIE',
-        'stable_dt',
         'time_s',
         'walltime_h',
     ]
@@ -151,7 +134,6 @@ def main():
     symmetry_factor = safe_float(config.get('symmetry_factor'), 4.0)
     force_unit_scale_to_kN = safe_float(config.get('force_unit_scale_to_kN'), 1.0)
     base_area = math.pi * D_m * D_m / 4.0
-    stable_dt = parse_stable_dt(config.get('sta_path') or config.get('sta_file'))
 
     rows = []
     for time_value, u3_value in u3:
@@ -171,7 +153,6 @@ def main():
                 'qs_kPa': '%.12g' % qs_kPa,
                 'ALLKE': '%.12g' % safe_float(value_at(allke, time_value)),
                 'ALLIE': '%.12g' % safe_float(value_at(allie, time_value)),
-                'stable_dt': stable_dt,
                 'time_s': '%.12g' % time_value,
                 'walltime_h': config.get('walltime_h', ''),
             }

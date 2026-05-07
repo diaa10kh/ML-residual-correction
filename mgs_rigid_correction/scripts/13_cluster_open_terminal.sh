@@ -2,7 +2,7 @@
 
 HOST="${MGS_CLUSTER_HOST:-hpc4.rz.tuhh.de}"
 USER="${MGS_CLUSTER_USER:-cda6556}"
-PASSWORD="${MGS_CLUSTER_PASSWORD:-xxxxxxxx}"
+WORK_DIR="${MGS_ROOT_REMOTE:-/work/gbt/${USER}/ML residual correction Phase0}"
 
-sshpass -p "${PASSWORD}" ssh -o StrictHostKeyChecking=no "${USER}@${HOST}"
+ssh -t "${USER}@${HOST}" "cd '${WORK_DIR}' && exec bash"
 read -p "Press Enter to exit..."

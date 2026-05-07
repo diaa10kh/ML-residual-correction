@@ -35,10 +35,8 @@ echo "Printing initial status information: $(scontrol show job ${SLURM_JOBID})"
 module load abaqus/2023
 module load intel/2019
 
-input_dir=${SLURM_SUBMIT_DIR}
-shopt -s nullglob
-input_files=($(ls -v ${input_dir}/*.inp))
-shopt -u nullglob
+input_dir="${SLURM_SUBMIT_DIR}"
+mapfile -t input_files < <(find "${input_dir}" -maxdepth 1 -type f -name '*.inp' -printf '%p\n' | sort -V)
 num_inputs=${#input_files[@]}
 
 if [[ ${num_inputs} -eq 0 ]]; then
@@ -52,29 +50,29 @@ if [[ ${SLURM_ARRAY_TASK_ID} -gt ${num_inputs} ]]; then
 fi
 
 input_file=${input_files[$SLURM_ARRAY_TASK_ID-1]}
-jobname=$(basename ${input_file} .inp)
+jobname=$(basename "${input_file}" .inp)
 
-fullpath=/work/${institut}/${kuerzel}/${project_name}/${SLURM_JOBID}_${jobname}
-mkdir -p ${fullpath}
+fullpath="/work/${institut}/${kuerzel}/${project_name}/${SLURM_JOBID}_${jobname}"
+mkdir -p "${fullpath}"
 
-cp ${input_file} ${fullpath}/
-if [[ -f ${input_dir}/${userroutine} ]]; then
-  cp ${input_dir}/${userroutine} ${fullpath}/
+cp "${input_file}" "${fullpath}/"
+if [[ -f "${input_dir}/${userroutine}" ]]; then
+  cp "${input_dir}/${userroutine}" "${fullpath}/"
 fi
 
-cd ${fullpath}
-if [[ -f ${userroutine} ]]; then
-  abaqus job=${jobname} input=${jobname}.inp user=${userroutine} cpus=${cpus} interactive double | tee ${jobname}_output.out
+cd "${fullpath}"
+if [[ -f "${userroutine}" ]]; then
+  abaqus job="${jobname}" input="${jobname}.inp" user="${userroutine}" cpus="${cpus}" interactive double | tee "${jobname}_output.out"
 else
   echo "WARNING: user routine ${userroutine} not found; running without user=..."
-  abaqus job=${jobname} input=${jobname}.inp cpus=${cpus} interactive double | tee ${jobname}_output.out
+  abaqus job="${jobname}" input="${jobname}.inp" cpus="${cpus}" interactive double | tee "${jobname}_output.out"
 fi
 
 for ext in odb sta msg dat log; do
-  if [[ -f ${jobname}.${ext} ]]; then
-    cp ${jobname}.${ext} ${SLURM_SUBMIT_DIR}/
+  if [[ -f "${jobname}.${ext}" ]]; then
+    cp "${jobname}.${ext}" "${SLURM_SUBMIT_DIR}/"
   fi
 done
-if [[ -f ${jobname}_output.out ]]; then
-  cp ${jobname}_output.out ${SLURM_SUBMIT_DIR}/
+if [[ -f "${jobname}_output.out" ]]; then
+  cp "${jobname}_output.out" "${SLURM_SUBMIT_DIR}/"
 fi

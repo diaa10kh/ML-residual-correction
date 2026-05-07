@@ -12,7 +12,6 @@ set -e
 
 HOST="${MGS_CLUSTER_HOST:-hpc4.rz.tuhh.de}"
 USER="${MGS_CLUSTER_USER:-cda6556}"
-PASSWORD="${MGS_CLUSTER_PASSWORD:-xxxxxxxx}"
 
 ROOT_LOCAL="${MGS_ROOT_LOCAL:-.}"
 ROOT_REMOTE="${MGS_ROOT_REMOTE:-/work/gbt/${USER}/MGS_Rigid_Correction/PHASE1_FLAT}"
@@ -26,15 +25,15 @@ START_INDEX="${2:-0}"
 END_INDEX="${3:-0}"
 
 ssh_remote() {
-  sshpass -p "${PASSWORD}" ssh "${USER}@${HOST}" "$1"
+  ssh "${USER}@${HOST}" "$1"
 }
 
 scp_to_remote() {
-  sshpass -p "${PASSWORD}" scp "$1" "${USER}@${HOST}:$2"
+  scp "$1" "${USER}@${HOST}:$2"
 }
 
 scp_from_remote() {
-  sshpass -p "${PASSWORD}" scp "${USER}@${HOST}:$1" "$2"
+  scp "${USER}@${HOST}:$1" "$2"
 }
 
 metadata_row_count() {

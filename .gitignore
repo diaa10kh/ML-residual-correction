@@ -42,3 +42,6 @@ venv/
 
 # Local manuscript/reference PDFs
 *.pdf
+
+# Local Abaqus user subroutines
+*.for
