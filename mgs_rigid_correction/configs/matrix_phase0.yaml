@@ -1,0 +1,67 @@
+{
+  "phase": "phase0",
+  "soil_model": "Hypoplastisch",
+  "reference_velocity_m_per_s": 0.5,
+  "penetration_eta_max": 0.90,
+  "symmetry_factor": 4,
+  "void_ratio": {
+    "e_min": 0.49,
+    "e_max": 0.76,
+    "reference_scenario_id": "G0_DENS_REF_V_REF",
+    "reference_density_id": "DENS_REF",
+    "reference_profile": {
+      "soil_void": 0.615854,
+      "upper_layer": 0.615854,
+      "down_layer": 0.55
+    }
+  },
+  "eta_grid": {
+    "start": 0.02,
+    "stop": 0.90,
+    "points": 200
+  },
+  "geometries": [
+    {
+      "geometry_id": "G0",
+      "D_m": 0.60,
+      "L_over_D": 16.67,
+      "L_m": 10.00,
+      "purpose": "benchmark geometry"
+    }
+  ],
+  "densities": [
+    {
+      "density_id": "DENS_MED",
+      "ID_percent": 60,
+      "purpose": "medium dense state"
+    },
+    {
+      "density_id": "DENS_REF",
+      "ID_percent": 80,
+      "purpose": "reference density from e0 = 0.55 with e_min = 0.49 and e_max = 0.76"
+    },
+    {
+      "density_id": "DENS_HIGH",
+      "ID_percent": 90,
+      "purpose": "very dense state"
+    }
+  ],
+  "velocities": [
+    {
+      "velocity_id": "V_LOW",
+      "velocity_m_per_s": 0.25,
+      "purpose": "slower than reference"
+    },
+    {
+      "velocity_id": "V_REF",
+      "velocity_m_per_s": 0.5,
+      "purpose": "benchmark velocity"
+    },
+    {
+      "velocity_id": "V_HIGH",
+      "velocity_m_per_s": 1,
+      "purpose": "quicker than reference"
+    }
+  ],
+  "scaling_factors": [1, 10, 100]
+}

@@ -1,0 +1,44 @@
+# Python/cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Abaqus local/session files
+*.rpy
+*.rpy.*
+*.jnl
+*.rec
+*.lck
+*.sim
+*.prt
+*.com
+*.pac
+*.sel
+*.stt
+
+# Generated Abaqus model/result files
+*.inp
+*.odb
+*.sta
+*.msg
+*.dat
+*.log
+*_output.out
+
+# Generated workflow outputs
+mgs_rigid_correction/runs/
+mgs_rigid_correction/data/raw/
+mgs_rigid_correction/data/extracted/
+mgs_rigid_correction/data/processed/
+mgs_rigid_correction/logs/
+mgs_rigid_correction/models/
+mgs_rigid_correction/reports/
+
+# Local environment files
+.env
+.venv/
+venv/
+
+# Local manuscript/reference PDFs
+*.pdf
