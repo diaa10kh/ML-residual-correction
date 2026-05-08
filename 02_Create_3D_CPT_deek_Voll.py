@@ -254,7 +254,7 @@ if (Querschnitt == 'Viertel'):
     ## Pile BC
 
     
-mymodel.TabularAmplitude(name='Amp_Einpressen', timeSpan=STEP, smooth=SOLVER_DEFAULT, data=((0.0, 0.0), (1.0, 1.0)))
+mymodel.TabularAmplitude(name='Amp_Einpressen', timeSpan=STEP, smooth=SOLVER_DEFAULT, data=((0.0, 0.0), (Einpress_Zeit, 1.0)))
 
 mymodel.steps['Einpressen'].setValues(improvedDtMethod=ON)
 

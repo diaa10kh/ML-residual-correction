@@ -10,8 +10,10 @@ set -e
 #   ./scripts/12_cluster_transfer_submit_fetch.sh submit_all 0 0
 #   ./scripts/12_cluster_transfer_submit_fetch.sh fetch 0 0
 
-HOST="${MGS_CLUSTER_HOST:-hpc4.rz.tuhh.de}"
 USER="${MGS_CLUSTER_USER:-cda6556}"
+HOSTS="${MGS_CLUSTER_HOSTS:-${MGS_CLUSTER_HOST:-hpc3.rz.tuhh.de hpc2.rz.tuhh.de}}"
+SSH_OPTS="${MGS_SSH_OPTS:--o ConnectTimeout=15}"
+ACTIVE_HOST=""
 
 ROOT_LOCAL="${MGS_ROOT_LOCAL:-.}"
 ROOT_REMOTE="${MGS_ROOT_REMOTE:-/work/gbt/${USER}/MGS_Rigid_Correction/PHASE1_FLAT}"
@@ -24,16 +26,35 @@ MODE="${1:-submit_all}"
 START_INDEX="${2:-0}"
 END_INDEX="${3:-0}"
 
+select_host() {
+  if [[ -n "${ACTIVE_HOST}" ]]; then
+    return 0
+  fi
+  local host
+  for host in ${HOSTS}; do
+    if ssh ${SSH_OPTS} -o BatchMode=yes "${USER}@${host}" "true" >/dev/null 2>&1; then
+      ACTIVE_HOST="${host}"
+      echo "Using cluster host ${ACTIVE_HOST}" >&2
+      return 0
+    fi
+  done
+  echo "No reachable cluster host found in: ${HOSTS}" >&2
+  return 1
+}
+
 ssh_remote() {
-  ssh "${USER}@${HOST}" "$1"
+  select_host
+  ssh ${SSH_OPTS} "${USER}@${ACTIVE_HOST}" "$1"
 }
 
 scp_to_remote() {
-  scp "$1" "${USER}@${HOST}:$2"
+  select_host
+  scp ${SSH_OPTS} "$1" "${USER}@${ACTIVE_HOST}:$2"
 }
 
 scp_from_remote() {
-  scp "${USER}@${HOST}:$1" "$2"
+  select_host
+  scp ${SSH_OPTS} "${USER}@${ACTIVE_HOST}:$1" "$2"
 }
 
 metadata_row_count() {

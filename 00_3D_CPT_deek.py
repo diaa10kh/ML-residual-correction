@@ -207,8 +207,7 @@ ModelBreite,   ModelTiefe,  PfahlRadius,    PfahlLaenge,  InnererRadius,    Heig
                                                                                                                                                      
 Step_length = 1
 
-Einpress_Weg = 3
-New_Einpress_Weg = 9 # Gaenderter Einpressweg in Fall des Einpressens
+New_Einpress_Weg = 9
 Einpress_Zeit = New_Einpress_Weg
 
 DichteHoehe = 4

@@ -350,12 +350,19 @@ bash scripts/12_cluster_transfer_submit_fetch.sh fetch
 The cluster scripts use standard SSH public-key authentication:
 
 ```bash
-ssh cda6556@hpc4.rz.tuhh.de
+ssh cda6556@hpc3.rz.tuhh.de
 ```
 
 No password, `sshpass`, or `StrictHostKeyChecking=no` is used. The helper
-`scripts/13_cluster_open_terminal.sh` opens an interactive shell directly in the
-configured remote work folder.
+scripts try `hpc3.rz.tuhh.de` first and then `hpc2.rz.tuhh.de` if needed. You
+can override the host list with:
+
+```bash
+MGS_CLUSTER_HOSTS="hpc3.rz.tuhh.de hpc2.rz.tuhh.de"
+```
+
+`scripts/13_cluster_open_terminal.sh` opens an interactive shell directly in
+the configured remote work folder.
 
 ## ODB Stage
 
