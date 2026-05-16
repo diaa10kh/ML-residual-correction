@@ -51,20 +51,28 @@ fi
 
 input_file=${input_files[$SLURM_ARRAY_TASK_ID-1]}
 jobname=$(basename "${input_file}" .inp)
+needs_userroutine=0
+if grep -qi '^[[:space:]]*\*User Material' "${input_file}"; then
+  needs_userroutine=1
+fi
 
 fullpath="/work/${institut}/${kuerzel}/${project_name}/${SLURM_JOBID}_${jobname}"
 mkdir -p "${fullpath}"
 
 cp "${input_file}" "${fullpath}/"
-if [[ -f "${input_dir}/${userroutine}" ]]; then
+if [[ "${needs_userroutine}" -eq 1 && -f "${input_dir}/${userroutine}" ]]; then
   cp "${input_dir}/${userroutine}" "${fullpath}/"
 fi
 
 cd "${fullpath}"
-if [[ -f "${userroutine}" ]]; then
+if [[ "${needs_userroutine}" -eq 1 && -f "${userroutine}" ]]; then
+  echo "Input contains *User Material; running with user routine ${userroutine}."
   abaqus job="${jobname}" input="${jobname}.inp" user="${userroutine}" cpus="${cpus}" interactive double | tee "${jobname}_output.out"
+elif [[ "${needs_userroutine}" -eq 1 ]]; then
+  echo "ERROR: input contains *User Material but ${userroutine} was not found in ${input_dir}."
+  exit 2
 else
-  echo "WARNING: user routine ${userroutine} not found; running without user=..."
+  echo "Input does not contain *User Material; running without user routine."
   abaqus job="${jobname}" input="${jobname}.inp" cpus="${cpus}" interactive double | tee "${jobname}_output.out"
 fi
 

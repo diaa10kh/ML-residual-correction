@@ -134,6 +134,15 @@ G0_DENS_REF_V_REF_S050
 G0_DENS_REF_V_REF_S100
 ```
 
+Mohr-Coulomb Phase 0 runs are deliberately prefixed with `MC_` so their
+inputs and results cannot collide with the hypoplastic runs:
+
+```text
+MC_G0_DENS_REF_V_REF_S001
+MC_G0_DENS_REF_V_REF_S010
+MC_G0_DENS_REF_V_REF_S100
+```
+
 The `scenario_id` is the same name without the MGS factor:
 
 ```text
@@ -229,6 +238,79 @@ void_ratio_upper_layer
 void_ratio_down_layer
 ```
 
+## Mohr-Coulomb Phase 0
+
+Mohr-Coulomb Phase 0 is a parallel workflow, not a replacement for the
+hypoplastic workflow. The config file is:
+
+```text
+configs/matrix_phase0_mohr_coulomb.yaml
+```
+
+It uses the same geometry, velocities, and MGS factors as Phase 0, but writes
+run IDs with the `MC_` prefix:
+
+```text
+MC_G0_DENS_MED_V_LOW_S001
+MC_G0_DENS_REF_V_REF_S010
+MC_G0_DENS_HIGH_V_HIGH_S100
+```
+
+For Mohr-Coulomb, the labels `DENS_MED`, `DENS_REF`, and `DENS_HIGH` mean
+calibrated material parameter sets, not Abaqus relative-density input
+parameters. The approved base values before MGS density scaling are:
+
+```text
+DENS_MED   rho=1.64  E=25000  nu=0.25  phi=29.0  psi=7.0   c=0.1
+DENS_REF   rho=1.64  E=30000  nu=0.25  phi=31.5  psi=10.0  c=0.1
+DENS_HIGH  rho=1.64  E=40000  nu=0.25  phi=34.0  psi=12.0  c=0.1
+```
+
+The metadata and each `case_config.json` therefore contain:
+
+```text
+mc_density
+mc_E
+mc_nu
+mc_phi
+mc_psi
+mc_cohesion
+mc_plastic_strain
+```
+
+The Abaqus generator still calls `BodenmaterialUndSectionErstellen(...)`.
+When `soil_model = "Mohr-Coulomb"`, the generated Abaqus material is then
+overwritten from `case_config.json` with the approved values above. This avoids
+editing Excel and keeps the hypoplastic material path unchanged.
+
+Generated Mohr-Coulomb `.inp` files should contain:
+
+```text
+*Elastic
+*Mohr Coulomb
+*Mohr Coulomb Hardening
+```
+
+and should not contain:
+
+```text
+*User Material
+*Depvar
+*Initial Conditions, type=SOLUTION
+```
+
+Generate Mohr-Coulomb Phase 0 metadata:
+
+```powershell
+python scripts\01_generate_matrix.py --config configs\matrix_phase0_mohr_coulomb.yaml --output data\extracted\run_metadata_phase0_mohr_coulomb.csv
+```
+
+Generate the 27 Mohr-Coulomb `.inp` files:
+
+```powershell
+python scripts\02_generate_abaqus_inputs.py --metadata data\extracted\run_metadata_phase0_mohr_coulomb.csv --soil-model Mohr-Coulomb --overwrite-config --execute
+```
+
 ## Phase 1 Quick Start
 
 Run from this folder:
@@ -238,18 +320,22 @@ python scripts\01_generate_matrix.py --config configs\matrix_phase1.yaml --soil-
 python scripts\02_generate_abaqus_inputs.py --metadata data\extracted\run_metadata.csv --soil-model Hypoplastisch --overwrite-config
 ```
 
-Choose the constitutive model at the first command with `--soil-model`:
+For Phase 1 hypoplastic runs, keep the default hypoplastic config:
 
 ```powershell
 python scripts\01_generate_matrix.py --config configs\matrix_phase1.yaml --soil-model Hypoplastisch
-python scripts\01_generate_matrix.py --config configs\matrix_phase1.yaml --soil-model Mohr-Coulomb
 ```
 
-You can also override it when writing the Abaqus case configs:
+Mohr-Coulomb generation needs a config that contains the `mohr_coulomb`
+parameter table. For the current project this is
+`configs\matrix_phase0_mohr_coulomb.yaml`.
+
+You can override the soil model when writing Abaqus case configs, but the
+metadata must already contain the needed fields for that material model:
 
 ```powershell
 python scripts\02_generate_abaqus_inputs.py --metadata data\extracted\run_metadata.csv --soil-model Hypoplastisch --overwrite-config
-python scripts\02_generate_abaqus_inputs.py --metadata data\extracted\run_metadata.csv --soil-model Mohr-Coulomb --overwrite-config
+python scripts\02_generate_abaqus_inputs.py --metadata data\extracted\run_metadata_phase0_mohr_coulomb.csv --soil-model Mohr-Coulomb --overwrite-config
 ```
 
 The second command prepares `runs\{run_id}\case_config.json` and a
@@ -333,6 +419,14 @@ MGS_MATRIX_CSV="data/extracted/run_metadata_phase0.csv" \
 bash scripts/12_cluster_transfer_submit_fetch.sh submit_all
 ```
 
+For the separate Mohr-Coulomb Phase 0 cluster folder:
+
+```bash
+MGS_ROOT_REMOTE="/work/gbt/cda6556/ML residual correction Phase0 Mohr-Coulomb" \
+MGS_MATRIX_CSV="data/extracted/run_metadata_phase0_mohr_coulomb.csv" \
+bash scripts/12_cluster_transfer_submit_fetch.sh submit_all
+```
+
 Fetch results later:
 
 ```bash
@@ -346,6 +440,10 @@ MGS_ROOT_REMOTE="/work/gbt/cda6556/ML residual correction Phase0" \
 MGS_MATRIX_CSV="data/extracted/run_metadata_phase0.csv" \
 bash scripts/12_cluster_transfer_submit_fetch.sh fetch
 ```
+
+The SLURM script checks each `.inp` file. If it contains `*User Material`, it
+runs Abaqus with `user=vumat-hypo-2020-hst.for`. Otherwise, as for
+Mohr-Coulomb, it runs without compiling the VUMAT.
 
 The cluster scripts use standard SSH public-key authentication:
 

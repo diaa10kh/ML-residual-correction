@@ -360,6 +360,34 @@ if MGS_CASE_CONFIG:
 _debug('Void ratios: Soil_Void=%s, Soil_Upper_Layer=%s, Soil_down_Layer=%s' % (
     MGS_VOID_RATIO_SOIL_VOID, MGS_VOID_RATIO_UPPER_LAYER, MGS_VOID_RATIO_DOWN_LAYER))
 
+
+def _required_case_float(name):
+    if (name not in MGS_CASE_CONFIG) or (MGS_CASE_CONFIG.get(name) in ('', None)):
+        raise RuntimeError('Missing required Mohr-Coulomb case_config value: %s' % name)
+    return float(MGS_CASE_CONFIG.get(name))
+
+
+MGS_MC_PARAMETERS = {}
+if MGS_CASE_CONFIG and Stoffgesetz == 'Mohr-Coulomb':
+    MGS_MC_PARAMETERS = {
+        'density': _required_case_float('mc_density'),
+        'E': _required_case_float('mc_E'),
+        'nu': _required_case_float('mc_nu'),
+        'phi': _required_case_float('mc_phi'),
+        'psi': _required_case_float('mc_psi'),
+        'cohesion': _required_case_float('mc_cohesion'),
+        'plastic_strain': float(MGS_CASE_CONFIG.get('mc_plastic_strain', 0.0) or 0.0),
+    }
+    _debug('Mohr-Coulomb parameters: rho=%s, E=%s, nu=%s, phi=%s, psi=%s, c=%s, epsp=%s' % (
+        MGS_MC_PARAMETERS['density'],
+        MGS_MC_PARAMETERS['E'],
+        MGS_MC_PARAMETERS['nu'],
+        MGS_MC_PARAMETERS['phi'],
+        MGS_MC_PARAMETERS['psi'],
+        MGS_MC_PARAMETERS['cohesion'],
+        MGS_MC_PARAMETERS['plastic_strain'],
+    ))
+
 materialien_boden = [
 #   Abaqus-Bez.   Datenbankname        Parameter-Bez.   Saettigung   Lagerungsd.   Stoffgesetz
 #   >''           >''                  ''               [0-1]        [0-1]         >''

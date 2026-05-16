@@ -197,6 +197,38 @@ def void_ratio_settings(config, scenario_id, density_id, ID_percent):
     }
 
 
+def format_float(value):
+    return "%.12g" % float(value)
+
+
+def mohr_coulomb_settings(config, density_id, soil_model):
+    fields = {
+        "mc_density": "",
+        "mc_E": "",
+        "mc_nu": "",
+        "mc_phi": "",
+        "mc_psi": "",
+        "mc_cohesion": "",
+        "mc_plastic_strain": "",
+    }
+    if soil_model != "Mohr-Coulomb":
+        return fields
+
+    table = config.get("mohr_coulomb", {})
+    values = table.get(density_id)
+    if values is None:
+        raise ValueError("Missing mohr_coulomb parameters for %s" % density_id)
+
+    fields["mc_density"] = format_float(as_float(values.get("rho", values.get("density"))))
+    fields["mc_E"] = format_float(as_float(values.get("E")))
+    fields["mc_nu"] = format_float(as_float(values.get("nu")))
+    fields["mc_phi"] = format_float(as_float(values.get("phi")))
+    fields["mc_psi"] = format_float(as_float(values.get("psi")))
+    fields["mc_cohesion"] = format_float(as_float(values.get("c", values.get("cohesion"))))
+    fields["mc_plastic_strain"] = format_float(as_float(values.get("plastic_strain"), 0.0))
+    return fields
+
+
 def linspace(start, stop, points):
     points = int(points)
     if points <= 1:
@@ -224,6 +256,8 @@ def row_to_jsonable(row):
 def expand_matrix(config):
     reference_velocity = as_float(config.get("reference_velocity_m_per_s"), 0.020)
     phase = to_str(config.get("phase", "matrix"))
+    soil_model = to_str(config.get("soil_model", "Hypoplastisch"))
+    run_id_prefix = to_str(config.get("run_id_prefix", "")).strip("_")
     rows = []
     for geometry in config.get("geometries", []):
         geometry_id = to_str(geometry["geometry_id"])
@@ -236,8 +270,13 @@ def expand_matrix(config):
             for velocity in config.get("velocities", []):
                 velocity_id = to_str(velocity["velocity_id"])
                 velocity_m_per_s = as_float(velocity["velocity_m_per_s"])
-                scenario_id = "%s_%s_%s" % (geometry_id, density_id, velocity_id)
-                void_ratios = void_ratio_settings(config, scenario_id, density_id, ID_percent)
+                base_scenario_id = "%s_%s_%s" % (geometry_id, density_id, velocity_id)
+                if run_id_prefix:
+                    scenario_id = "%s_%s" % (run_id_prefix, base_scenario_id)
+                else:
+                    scenario_id = base_scenario_id
+                void_ratios = void_ratio_settings(config, base_scenario_id, density_id, ID_percent)
+                mc_values = mohr_coulomb_settings(config, density_id, soil_model)
                 for scaling_factor in config.get("scaling_factors", []):
                     S = as_int(scaling_factor)
                     run_id = "%s_%s" % (scenario_id, s_label(S))
@@ -246,6 +285,8 @@ def expand_matrix(config):
                         {
                             "run_id": run_id,
                             "scenario_id": scenario_id,
+                            "base_scenario_id": base_scenario_id,
+                            "run_id_prefix": run_id_prefix,
                             "phase": phase,
                             "geometry_id": geometry_id,
                             "density_id": density_id,
@@ -260,7 +301,14 @@ def expand_matrix(config):
                             "rho_scale": "%.12g" % float(S),
                             "gravity_scale": "%.12g" % (1.0 / float(S)),
                             "pile_type": "rigid",
-                            "soil_model": to_str(config.get("soil_model", "Hypoplastisch")),
+                            "soil_model": soil_model,
+                            "mc_density": mc_values["mc_density"],
+                            "mc_E": mc_values["mc_E"],
+                            "mc_nu": mc_values["mc_nu"],
+                            "mc_phi": mc_values["mc_phi"],
+                            "mc_psi": mc_values["mc_psi"],
+                            "mc_cohesion": mc_values["mc_cohesion"],
+                            "mc_plastic_strain": mc_values["mc_plastic_strain"],
                             "void_ratio_mode": void_ratios["void_ratio_mode"],
                             "void_ratio_formula": void_ratios["void_ratio_formula"],
                             "void_ratio_e_min": void_ratios["void_ratio_e_min"],

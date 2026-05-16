@@ -58,6 +58,44 @@ benoetigtUserroutine, verwendeteBodenwerte = BodenmaterialUndSectionErstellen(mo
    userroutine=userroutine, numDepVar=numDepVar, euler=True);
      
 
+def _apply_mohr_coulomb_case_parameters(model, material_name):
+   if (not MGS_CASE_CONFIG) or (Stoffgesetz != 'Mohr-Coulomb'):
+      return
+   if not MGS_MC_PARAMETERS:
+      raise RuntimeError('Mohr-Coulomb case selected without MGS_MC_PARAMETERS')
+
+   material = model.materials[material_name]
+   rho = MGS_MC_PARAMETERS['density']
+   elastic_E = MGS_MC_PARAMETERS['E']
+   elastic_nu = MGS_MC_PARAMETERS['nu']
+   phi = MGS_MC_PARAMETERS['phi']
+   psi = MGS_MC_PARAMETERS['psi']
+   cohesion = MGS_MC_PARAMETERS['cohesion']
+   plastic_strain = MGS_MC_PARAMETERS['plastic_strain']
+
+   try:
+      material.density.setValues(table=((rho, ), ))
+   except Exception:
+      material.Density(table=((rho, ), ))
+
+   try:
+      material.elastic.setValues(table=((elastic_E, elastic_nu), ))
+   except Exception:
+      material.Elastic(table=((elastic_E, elastic_nu), ))
+
+   try:
+      material.mohrCoulombPlasticity.setValues(table=((phi, psi), ))
+   except Exception:
+      material.MohrCoulombPlasticity(table=((phi, psi), ))
+
+   material.mohrCoulombPlasticity.MohrCoulombHardening(
+      table=((cohesion, plastic_strain), ))
+
+   _debug('Applied Mohr-Coulomb material override to %s' % material_name)
+
+
+_apply_mohr_coulomb_case_parameters(mymodel, 'HYPO-VW96-Sand')
+
 # Access the density value
 density_value = mymodel.materials['HYPO-VW96-Sand'].density.table[0][0]
     
