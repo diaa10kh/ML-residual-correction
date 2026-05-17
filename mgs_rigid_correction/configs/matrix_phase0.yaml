@@ -31,6 +31,11 @@
   ],
   "densities": [
     {
+      "density_id": "DENS_LOW",
+      "ID_percent": 30,
+      "purpose": "loose state"
+    },
+    {
       "density_id": "DENS_MED",
       "ID_percent": 60,
       "purpose": "medium dense state"
@@ -63,5 +68,5 @@
       "purpose": "quicker than reference"
     }
   ],
-  "scaling_factors": [1, 10, 100]
+  "scaling_factors": [1, 10, 30, 50, 100]
 }

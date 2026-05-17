@@ -1,16 +1,16 @@
 """
-01_build_dataset.py
+07_build_ml_dataset.py
 -------------------
 Reads all real Abaqus CSV files from the data folder.
-Pairs fast runs (S=10, S=100) with the reference (S=1) 
+Pairs mass-scaled runs with the reference (S=1)
 using scenario_id as the matching key.
 
 
-Output: data/real_dataset.csv
+Output: data/processed/ml/{mohr_coulomb,hypoplastic}/real_dataset.csv
 
 HOW TO USE:
-  1. Put all 27 CSV files in the data/raw/ folder
-  2. Run: python scripts/01_build_dataset.py
+  1. Put extracted per-run CSV files in data/extracted/per_run_csv/
+  2. Run: python scripts/07_build_ml_dataset.py
 
 FILE NAMING CONVENTION EXPECTED:
   MC_G0_DENS_{DENS_LEVEL}_V_{V_LEVEL}_S{SSS}.csv
@@ -25,11 +25,14 @@ PARAMETER ENCODING IN FILENAME:
   V_REF      → velocity_level = REF  (reference velocity)
   S001       → S = 1   (reference — ground truth)
   S010       → S = 10
-  S100       → S = 100 (fast run)
+  S030       → S = 30
+  S050       → S = 50
+  S100       → S = 100
 """
 
 import pandas as pd
 import numpy as np
+import argparse
 import os
 import glob
 import sys
@@ -57,16 +60,16 @@ _ROOT, _data_name = _find_root()
 _DATA_FOLDER = os.path.join(_ROOT, _data_name)
 
 RAW_DIR = os.path.join(_DATA_FOLDER, "extracted", "per_run_csv")
-OUT_ROOT = os.path.join(_DATA_FOLDER, "processed", "student")
+OUT_ROOT = os.path.join(_DATA_FOLDER, "processed", "ml")
 OUT_PATH = os.path.join(OUT_ROOT, "combined", "real_dataset.csv")
 S_REF    = 1
 
 SOIL_MODEL_RUNS = [
     {
-        "name": "mcm",
-        "label": "MCM",
+        "name": "mohr_coulomb",
+        "label": "Mohr-Coulomb",
         "patterns": ["MC_*.csv"],
-        "out_path": os.path.join(OUT_ROOT, "mcm", "real_dataset.csv"),
+        "out_path": os.path.join(OUT_ROOT, "mohr_coulomb", "real_dataset.csv"),
     },
     {
         "name": "hypoplastic",
@@ -76,9 +79,6 @@ SOIL_MODEL_RUNS = [
     },
 ]
 
-print(f"ROOT:    {_ROOT}")
-print(f"DATA:    {_DATA_FOLDER}")
-print(f"RAW:     {RAW_DIR}")
 
 # ── To run second batch (G0_ files) separately ───────────────────────────────
 # RAW_DIR  = os.path.join(_DATA_FOLDER, "raw_g0")
@@ -87,7 +87,7 @@ print(f"RAW:     {RAW_DIR}")
 
 DEPTH_GRID = np.arange(0.1, 9.05, 0.1)
 
-DENS_MAP = {"MED": 0.60, "REF": 0.80, "HIGH": 0.90}
+DENS_MAP = {"LOW": 0.30, "MED": 0.60, "REF": 0.80, "HIGH": 0.90}
 VPEN_MAP = {"LOW": 25.0, "REF": 50.0, "HIGH": 100.0}
 
 # qb changes slowly with depth → larger window justified
@@ -240,18 +240,18 @@ def build_dataset(label="Combined", patterns=None, out_path=OUT_PATH):
         print(f"\nScenario: {scenario_id}")
         print(f"  ID={ID}, v_pen={v_pen}, ref rows={len(ref_grid)}")
 
-        # For each fast run (S != S_REF)
+        # For each mass-scaled run (S != S_REF)
         fast_rows = grp[grp["S"] != S_REF]
         for _, fast_row in fast_rows.iterrows():
             S_fast = fast_row["S"]
             fast_path = fast_row["path"]
 
-            # Read and interpolate fast run
+            # Read and interpolate mass-scaled run
             df_fast   = pd.read_csv(fast_path)
             fast_grid = interpolate_to_grid(df_fast)
             fast_grid = fast_grid.dropna()
 
-            # Apply same 30-point smoothing to fast runs
+            # Apply same 30-point smoothing to mass-scaled runs
             # smoothing should be applied to all curves
             fast_grid["qb_MPa"] = smooth_curve(fast_grid["qb_MPa"].values, SMOOTH_WINDOW_QB)
             fast_grid["qs_kPa"] = smooth_curve(fast_grid["qs_kPa"].values, SMOOTH_WINDOW_QS)
@@ -292,8 +292,8 @@ def build_dataset(label="Combined", patterns=None, out_path=OUT_PATH):
 
     if len(records) == 0:
         print("\nERROR: No paired simulations found.")
-        print("This means no scenario has both a S=1 reference AND a fast run.")
-        print("Make sure all 27 files are in the data/raw/ folder.")
+        print("This means no scenario has both a S=1 reference AND a mass-scaled run.")
+        print("Make sure the extracted per-run CSV files are in data/extracted/per_run_csv/.")
         print("\nFiles found and their scenario_ids:")
         for _, row in df_info.iterrows():
             print(f"  S={row['S']:3d}  scenario={row['scenario_id']}")
@@ -354,10 +354,30 @@ def build_dataset(label="Combined", patterns=None, out_path=OUT_PATH):
     return df_out
 
 
-if __name__ == "__main__":
+def main():
+    parser = argparse.ArgumentParser(description="Build paired ML residual datasets from extracted per-run CSV files.")
+    parser.add_argument(
+        "--soil-model",
+        choices=["all", "mohr_coulomb", "mcm", "hypoplastic"],
+        default="all",
+        help="Limit dataset building to one soil model. 'mcm' is kept as an alias for mohr_coulomb.",
+    )
+    args = parser.parse_args()
+    selected_soil_model = "mohr_coulomb" if args.soil_model == "mcm" else args.soil_model
+
+    print(f"ROOT:    {_ROOT}")
+    print(f"DATA:    {_DATA_FOLDER}")
+    print(f"RAW:     {RAW_DIR}")
+
     for run in SOIL_MODEL_RUNS:
+        if selected_soil_model != "all" and run["name"] != selected_soil_model:
+            continue
         build_dataset(
             label=run["label"],
             patterns=run["patterns"],
             out_path=run["out_path"],
         )
+
+
+if __name__ == "__main__":
+    main()

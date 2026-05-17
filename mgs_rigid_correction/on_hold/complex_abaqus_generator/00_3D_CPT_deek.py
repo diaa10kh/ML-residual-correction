@@ -93,7 +93,7 @@ else:
     else:
         message = (
             'No MGS case config was supplied. Run this file through '
-            'mgs_rigid_correction/scripts/02_generate_abaqus_inputs.py, or set '
+            'mgs_rigid_correction/on_hold/complex_abaqus_generator/02_generate_abaqus_inputs.py, or set '
             'the MGS_CASE_CONFIG environment variable to a runs/.../case_config.json file.'
         )
         _debug(message)
@@ -140,7 +140,7 @@ InitialisiereAbapys(session=session, version=version, pfad=abapys_dir);
 Querschnitt = 'Viertel'  #: 'Viertel', 'Halb' oder 'Voll'
 
  
-''' Boring View
+r''' Boring View
          
           PfahlRadius*2 
              _|_|_     

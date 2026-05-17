@@ -33,7 +33,10 @@ mgs_rigid_correction/data/extracted/
 mgs_rigid_correction/data/processed/
 mgs_rigid_correction/logs/
 mgs_rigid_correction/models/
+mgs_rigid_correction/plots/
 mgs_rigid_correction/reports/
+mgs_rigid_correction/results/
+mgs_rigid_correction/_generated_artifacts_backup/
 
 # Local environment files
 .env
@@ -45,3 +48,9 @@ venv/
 
 # Local Abaqus user subroutines
 *.for
+
+# Versioned workflow inputs that intentionally use ignored extensions
+!mgs_rigid_correction/reference_inputs/
+!mgs_rigid_correction/reference_inputs/*.inp
+!mgs_rigid_correction/abaqus/
+!mgs_rigid_correction/abaqus/*.for

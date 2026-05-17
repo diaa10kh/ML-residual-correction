@@ -17,6 +17,15 @@
     }
   },
   "mohr_coulomb": {
+    "DENS_LOW": {
+      "rho": 1.64,
+      "E": 20000,
+      "nu": 0.25,
+      "phi": 27.0,
+      "psi": 5.0,
+      "c": 0.1,
+      "plastic_strain": 0.0
+    },
     "DENS_MED": {
       "rho": 1.64,
       "E": 25000,
@@ -61,6 +70,11 @@
   ],
   "densities": [
     {
+      "density_id": "DENS_LOW",
+      "ID_percent": 30,
+      "purpose": "loose Mohr-Coulomb parameter set"
+    },
+    {
       "density_id": "DENS_MED",
       "ID_percent": 60,
       "purpose": "medium dense Mohr-Coulomb parameter set"
@@ -93,5 +107,5 @@
       "purpose": "quicker than reference"
     }
   ],
-  "scaling_factors": [1, 10, 100]
+  "scaling_factors": [1, 10, 30, 50, 100]
 }

@@ -8,7 +8,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from mgs_common import project_path, read_csv, write_csv
+from mgs_common import project_path, read_csv, resolve_project_path, write_csv
 
 
 def exists(path):
@@ -17,11 +17,13 @@ def exists(path):
 
 def main():
     parser = argparse.ArgumentParser(description="Check expected Abaqus files for each run.")
-    parser.add_argument("--metadata", default=project_path("data", "extracted", "run_metadata.csv"))
+    parser.add_argument("--metadata", default=project_path("data", "extracted", "run_metadata_phase0.csv"))
     parser.add_argument("--output", default=project_path("reports", "tables", "job_status.csv"))
     args = parser.parse_args()
 
-    rows = read_csv(args.metadata)
+    metadata_path = resolve_project_path(args.metadata)
+    output_path = resolve_project_path(args.output)
+    rows = read_csv(metadata_path)
     status_rows = []
     counts = {"inp": 0, "odb": 0, "csv": 0}
     for row in rows:
@@ -43,9 +45,9 @@ def main():
         if status["csv_exists"] == "True":
             counts["csv"] += 1
         status_rows.append(status)
-    write_csv(args.output, status_rows)
+    write_csv(output_path, status_rows)
     print("Checked %d runs. inp=%d odb=%d extracted_csv=%d" % (len(rows), counts["inp"], counts["odb"], counts["csv"]))
-    print("Wrote %s" % args.output)
+    print("Wrote %s" % output_path)
 
 
 if __name__ == "__main__":

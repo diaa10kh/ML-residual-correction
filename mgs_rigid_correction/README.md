@@ -1,124 +1,173 @@
 # Rigid-Pile MGS Residual Correction Workflow
 
-This folder implements the rigid-pile Mass-Gravity-Scaling workflow described in
-`../ml_residual_correction_plan.md`, with the benchmark assumptions checked
-against `../ICPMG26-manuscript-alkateeb-revised_final.pdf`.
+This folder is the active workflow. It generates Abaqus input files from one
+checked reference input file, runs the simulations on the cluster, extracts ODB
+curves, and trains a residual correction model.
 
-The current execution order is staged:
+Run commands from this folder unless noted otherwise:
 
-1. Generate the simulation matrix and one `case_config.json` per run.
-2. Use Abaqus/CAE Python 2.7 to write one `.inp` file per run.
-3. Submit the generated `.inp` files on the cluster through a SLURM array.
-4. After the `.odb` files are available locally, run postprocessing, resampling,
-   pairing, model training, evaluation, correction, and plots.
-
-## Scientific Message
-
-The main argument of this project is:
-
-```text
-Mass-Gravity-Scaling accelerates large-deformation geotechnical simulations,
-but introduces systematic response errors. These errors are learnable from a
-limited simulation matrix and can be corrected using a residual ML model,
-enabling faster simulations while preserving reference-quality
-force-penetration behavior.
+```powershell
+cd mgs_rigid_correction
 ```
 
-The scientific contribution should not be framed as only:
+## Active Files
 
 ```text
-we trained ML
+configs/                              matrix definitions
+reference_inputs/CPT_90_MCM_...inp    checked Mohr-Coulomb reference input
+abaqus/vumat-hypo-2020-hst.for        VUMAT for hypoplastic runs
+scripts/01_generate_matrix.py         write run metadata
+scripts/02_generate_inputs_from_reference.py
+scripts/03_submit_slurm_array.sh      remote SLURM array script
+scripts/04_check_jobs.py              check expected files
+scripts/05_run_postprocessing.py      prepare/run ODB extraction
+scripts/06_resample_curves.py         resample extracted curves
+scripts/07_build_ml_dataset.py        build paired residual datasets
+scripts/08_train_correction_model.py  train model and plots
 ```
 
-The stronger paper message is:
+The old Abaqus/CAE model-building generator is not active. It is kept for later
+under:
 
 ```text
-we made accelerated Abaqus simulations more reliable and quantified the
-accuracy-speed tradeoff.
+on_hold/complex_abaqus_generator/
 ```
 
-In practical terms, the trained residual model is applied as:
+## Quick Start: Phase 0 Hypoplastic
+
+Generate the 60-run Phase 0 matrix:
+
+```powershell
+python scripts\01_generate_matrix.py --config configs\matrix_phase0.yaml --output data\extracted\run_metadata_phase0.csv
+```
+
+Create `.inp` files by patching the reference input:
+
+```powershell
+python scripts\02_generate_inputs_from_reference.py --metadata data\extracted\run_metadata_phase0.csv --soil-model Hypoplastisch --clean
+```
+
+`--clean` only removes previously generated input/helper files in the selected
+run folders. It does not remove `.odb`, `.sta`, `.msg`, `.dat`, or output logs.
+
+Check generated files:
+
+```powershell
+python scripts\04_check_jobs.py --metadata data\extracted\run_metadata_phase0.csv --output reports\tables\job_status_phase0.csv
+```
+
+Expected full Phase 0 hypoplastic input count:
 
 ```text
-q_corrected(eta) = q_scaled(eta) + residual_ML(eta, S, density, velocity, ...)
+inp=60
 ```
 
-where `q_scaled` is the raw high-MGS Abaqus response, `residual_ML` is the
-learned correction, and `q_corrected` should approach the expensive `S=1`
-reference response.
+## Quick Start: Phase 0 Mohr-Coulomb
 
-## Proposed Paper Plots
+Generate the Mohr-Coulomb matrix:
 
-The final paper should include plots that show the problem, the correction, and
-the computational benefit.
+```powershell
+python scripts\01_generate_matrix.py --config configs\matrix_phase0_mohr_coulomb.yaml --output data\extracted\run_metadata_phase0_mohr_coulomb.csv
+```
 
-1. Workflow diagram
+Create the 60 Mohr-Coulomb `.inp` files:
 
-   ```text
-   Abaqus MGS simulations -> ODB extraction -> force-depth curves ->
-   residual calculation -> ML training -> corrected response
-   ```
+```powershell
+python scripts\02_generate_inputs_from_reference.py --metadata data\extracted\run_metadata_phase0_mohr_coulomb.csv --soil-model Mohr-Coulomb --clean
+```
 
-2. Raw MGS error curves
+Check generated files:
 
-   Plot `q` or pile reaction force versus normalized penetration `eta` for
-   `S=1`, `S=10`, `S=30`, `S=50`, and `S=100`. This shows how the scaled
-   simulations deviate from the reference.
+```powershell
+python scripts\04_check_jobs.py --metadata data\extracted\run_metadata_phase0_mohr_coulomb.csv --output reports\tables\job_status_phase0_mohr_coulomb.csv
+```
 
-3. Before and after correction curves
+Expected full Phase 0 Mohr-Coulomb input count:
 
-   Plot the `S=1` reference, the raw high-S result, and the corrected high-S
-   result on the same axes. This is the main visual proof that the correction
-   works.
+```text
+inp=60
+```
 
-4. Residual curves
+## Optional Phase 1
 
-   Plot:
+Phase 1 remains available through `configs/matrix_phase1.yaml`. It uses the
+same reference-input generator:
 
-   ```text
-   residual(eta) = q_reference(eta) - q_scaled(eta)
-   ```
+```powershell
+python scripts\01_generate_matrix.py --config configs\matrix_phase1.yaml --output data\extracted\run_metadata.csv
+python scripts\02_generate_inputs_from_reference.py --metadata data\extracted\run_metadata.csv --soil-model Hypoplastisch --clean
+```
 
-   for different MGS factors, densities, velocities, and soil models. This
-   shows the pattern that the ML model is learning.
+Expected full Phase 1 input count:
 
-5. Error reduction plot
+```text
+inp=60
+```
 
-   Plot RMSE, MAE, or normalized error before and after correction for each MGS
-   factor. This gives a compact quantitative comparison.
+## Cluster Run
 
-6. Parity plot
+After `.inp` files exist, submit from WSL:
 
-   Plot corrected response versus `S=1` reference response with a 1:1 line.
-   Good correction should cluster near the 1:1 line.
+```bash
+bash scripts/12_cluster_transfer_submit_fetch.sh submit_all
+```
 
-7. Speedup versus accuracy tradeoff
+Useful overrides:
 
-   Plot computational cost or speedup against error for raw and corrected MGS
-   simulations. This figure answers the engineering question: how much faster
-   can the simulation be while keeping acceptable accuracy?
+```bash
+MGS_MATRIX_CSV="data/extracted/run_metadata_phase0_mohr_coulomb.csv" \
+MGS_ROOT_REMOTE="/work/gbt/cda6556/MGS_Rigid_Correction/PHASE0_MC" \
+bash scripts/12_cluster_transfer_submit_fetch.sh submit_all
+```
 
-8. Generalization test
+Fetch results later:
 
-   Hold out one density, velocity, or soil model from training and test whether
-   the correction still works. This helps show that the method is not only
-   memorizing the simulation matrix.
+```bash
+bash scripts/12_cluster_transfer_submit_fetch.sh fetch
+```
 
-9. Feature importance or SHAP plot
+The SLURM script checks each input. If it contains `*User Material`, Abaqus is
+run with `vumat-hypo-2020-hst.for`; otherwise it runs without a user routine.
 
-   If the residual model is based on XGBoost or another tree model, plot which
-   inputs control the correction most strongly, such as `eta`, `S`, velocity,
-   density, void ratio, and raw response.
+## Postprocessing and ML
+
+After `.odb` files are back in `runs/{run_id}/`:
+
+```powershell
+python scripts\05_run_postprocessing.py --metadata data\extracted\run_metadata_phase0.csv --execute
+python scripts\06_resample_curves.py --metadata data\extracted\run_metadata_phase0.csv --matrix-config configs\matrix_phase0.yaml
+python scripts\07_build_ml_dataset.py
+python scripts\08_train_correction_model.py
+```
+
+Both ML scripts also accept `--soil-model mohr_coulomb` or
+`--soil-model hypoplastic` when only one branch should be rebuilt. The older
+short name `mcm` is still accepted as an alias for `mohr_coulomb`.
+
+`07_build_ml_dataset.py` expects per-run CSV files in:
+
+```text
+data/extracted/per_run_csv/
+```
+
+It writes model-specific datasets under:
+
+```text
+data/processed/ml/
+```
+
+`08_train_correction_model.py` writes generated outputs under:
+
+```text
+results/ml/
+plots/ml/
+```
+
+These generated folders are ignored by Git.
 
 ## Run Naming
 
-Each simulation is identified by one `run_id`:
-
-```text
-run_id = geometry_id + density_id + velocity_id + S
-```
-
-The exact format is:
+Each simulation uses:
 
 ```text
 {geometry_id}_{density_id}_{velocity_id}_S{S as 3 digits}
@@ -129,373 +178,65 @@ Examples:
 ```text
 G0_DENS_REF_V_REF_S001
 G0_DENS_REF_V_REF_S010
-G0_DENS_REF_V_REF_S030
-G0_DENS_REF_V_REF_S050
 G0_DENS_REF_V_REF_S100
 ```
 
-Mohr-Coulomb Phase 0 runs are deliberately prefixed with `MC_` so their
-inputs and results cannot collide with the hypoplastic runs:
+Mohr-Coulomb runs are prefixed with `MC_`:
 
 ```text
 MC_G0_DENS_REF_V_REF_S001
-MC_G0_DENS_REF_V_REF_S010
-MC_G0_DENS_REF_V_REF_S100
 ```
 
-The `scenario_id` is the same name without the MGS factor:
+All runs with the same `scenario_id` belong together. High-S runs are paired
+with the corresponding `S=1` reference for residual learning.
 
-```text
-scenario_id = geometry_id + density_id + velocity_id
-```
+## Modelling Rules
 
-Example:
-
-```text
-scenario_id = G0_DENS_REF_V_REF
-```
-
-All runs with the same `scenario_id` belong together. The only difference
-between them is the MGS factor `S`. This is how the workflow pairs each high-S
-run with its corresponding S=1 reference.
-
-Generated Abaqus files use the `run_id` directly:
-
-```text
-runs/{run_id}/{run_id}.inp
-runs/{run_id}/{run_id}.odb
-runs/{run_id}/{run_id}.sta
-runs/{run_id}/{run_id}.msg
-```
-
-For example:
-
-```text
-runs/G0_DENS_REF_V_REF_S100/G0_DENS_REF_V_REF_S100.inp
-runs/G0_DENS_REF_V_REF_S100/G0_DENS_REF_V_REF_S100.odb
-```
-
-## Void Ratio
-
-For the hypoplastic model, the first solution-dependent state variable in the
-inserted Abaqus keyword block is the initial void ratio. It is no longer
-hard-coded in `02_Create_3D_CPT_deek_Voll.py`; it is written per run through
-`case_config.json`.
-
-In Phase 0 and Phase 1, every `DENS_REF` run keeps the experimental
-two-layer profile:
-
-```text
-DENS_REF
-Soil_Void        e = 0.615854
-Soil_Upper_Layer e = 0.615854
-Soil_down_Layer  e = 0.55
-```
-
-The active Phase 0 and Phase 1 density IDs are:
-
-```text
-DENS_MED  = ID 0.6
-DENS_REF  = experimental hard-coded void-ratio profile
-DENS_HIGH = ID 0.9
-```
-
-The active Phase 0 and Phase 1 velocity IDs are:
-
-```text
-V_LOW  = 0.25 m/s
-V_REF  = 0.50 m/s
-V_HIGH = 1.00 m/s
-```
-
-All non-`DENS_REF` scenarios use one uniform void ratio for all three sets:
-
-```text
-Soil_Void = Soil_Upper_Layer = Soil_down_Layer = e(ID)
-```
-
-The uniform value is computed from `ID_percent` using:
-
-```text
-D = (e_max - e) / (e_max - e_min) * (1 + e_min) / (1 + e)
-```
-
-with the current defaults:
-
-```text
-e_min = 0.49
-e_max = 0.76
-```
-
-These settings are in the matrix config files under `void_ratio`. The generated
-metadata and each `case_config.json` contain:
-
-```text
-void_ratio_mode
-use_reference_void_profile
-void_ratio_soil_void
-void_ratio_upper_layer
-void_ratio_down_layer
-```
-
-## Mohr-Coulomb Phase 0
-
-Mohr-Coulomb Phase 0 is a parallel workflow, not a replacement for the
-hypoplastic workflow. The config file is:
-
-```text
-configs/matrix_phase0_mohr_coulomb.yaml
-```
-
-It uses the same geometry, velocities, and MGS factors as Phase 0, but writes
-run IDs with the `MC_` prefix:
-
-```text
-MC_G0_DENS_MED_V_LOW_S001
-MC_G0_DENS_REF_V_REF_S010
-MC_G0_DENS_HIGH_V_HIGH_S100
-```
-
-For Mohr-Coulomb, the labels `DENS_MED`, `DENS_REF`, and `DENS_HIGH` mean
-calibrated material parameter sets, not Abaqus relative-density input
-parameters. The approved base values before MGS density scaling are:
-
-```text
-DENS_MED   rho=1.64  E=25000  nu=0.25  phi=29.0  psi=7.0   c=0.1
-DENS_REF   rho=1.64  E=30000  nu=0.25  phi=31.5  psi=10.0  c=0.1
-DENS_HIGH  rho=1.64  E=40000  nu=0.25  phi=34.0  psi=12.0  c=0.1
-```
-
-The metadata and each `case_config.json` therefore contain:
-
-```text
-mc_density
-mc_E
-mc_nu
-mc_phi
-mc_psi
-mc_cohesion
-mc_plastic_strain
-```
-
-The Abaqus generator still calls `BodenmaterialUndSectionErstellen(...)`.
-When `soil_model = "Mohr-Coulomb"`, the generated Abaqus material is then
-overwritten from `case_config.json` with the approved values above. This avoids
-editing Excel and keeps the hypoplastic material path unchanged.
-
-Generated Mohr-Coulomb `.inp` files should contain:
-
-```text
-*Elastic
-*Mohr Coulomb
-*Mohr Coulomb Hardening
-```
-
-and should not contain:
-
-```text
-*User Material
-*Depvar
-*Initial Conditions, type=SOLUTION
-```
-
-Generate Mohr-Coulomb Phase 0 metadata:
-
-```powershell
-python scripts\01_generate_matrix.py --config configs\matrix_phase0_mohr_coulomb.yaml --output data\extracted\run_metadata_phase0_mohr_coulomb.csv
-```
-
-Generate the 27 Mohr-Coulomb `.inp` files:
-
-```powershell
-python scripts\02_generate_abaqus_inputs.py --metadata data\extracted\run_metadata_phase0_mohr_coulomb.csv --soil-model Mohr-Coulomb --overwrite-config --execute
-```
-
-## Phase 1 Quick Start
-
-Run from this folder:
-
-```powershell
-python scripts\01_generate_matrix.py --config configs\matrix_phase1.yaml --soil-model Hypoplastisch
-python scripts\02_generate_abaqus_inputs.py --metadata data\extracted\run_metadata.csv --soil-model Hypoplastisch --overwrite-config
-```
-
-For Phase 1 hypoplastic runs, keep the default hypoplastic config:
-
-```powershell
-python scripts\01_generate_matrix.py --config configs\matrix_phase1.yaml --soil-model Hypoplastisch
-```
-
-Mohr-Coulomb generation needs a config that contains the `mohr_coulomb`
-parameter table. For the current project this is
-`configs\matrix_phase0_mohr_coulomb.yaml`.
-
-You can override the soil model when writing Abaqus case configs, but the
-metadata must already contain the needed fields for that material model:
-
-```powershell
-python scripts\02_generate_abaqus_inputs.py --metadata data\extracted\run_metadata.csv --soil-model Hypoplastisch --overwrite-config
-python scripts\02_generate_abaqus_inputs.py --metadata data\extracted\run_metadata_phase0_mohr_coulomb.csv --soil-model Mohr-Coulomb --overwrite-config
-```
-
-The second command prepares `runs\{run_id}\case_config.json` and a
-`generate_input.ps1` helper for each run. To make Abaqus actually write `.inp`
-files, add `--execute`:
-
-```powershell
-python scripts\02_generate_abaqus_inputs.py --metadata data\extracted\run_metadata.csv --soil-model Hypoplastisch --overwrite-config --execute
-```
-
-For a one-case smoke test:
-
-```powershell
-python scripts\02_generate_abaqus_inputs.py --metadata data\extracted\run_metadata.csv --soil-model Hypoplastisch --overwrite-config --execute --run-id G0_DENS_REF_V_REF_S001
-```
-
-Then check generated files:
-
-```powershell
-python scripts\04_check_jobs.py
-```
-
-Expected after the full Phase 1 input generation:
-
-```text
-inp=45
-```
-
-Expected after the full Phase 0 input generation:
-
-```text
-inp=27
-```
-
-The wrapper passes each case to Abaqus through the `MGS_CASE_CONFIG`
-environment variable and then calls:
-
-```text
-abaqus cae noGUI=..\00_3D_CPT_deek.py
-```
-
-Do not open or run `..\00_3D_CPT_deek.py` directly in Abaqus/CAE for this
-workflow. Without `MGS_CASE_CONFIG`, it does not know which run folder and
-configuration to use.
-
-The Abaqus generator path is intentionally Python 2.7-compatible. The
-postprocessing and ML scripts can be run with a normal Python environment.
-
-## Cluster Submission
-
-The SLURM template is:
-
-```text
-scripts/03_submit_slurm_array.sh
-```
-
-The current Phase 0 template requests `8` CPUs per task and `5000 MB` per CPU.
-
-It follows the working TUHH cluster pattern from your earlier project: upload
-all `.inp` files into one flat remote directory, submit an oversized guarded
-array, copy each selected input to a job-specific `/work/gbt/...` directory,
-run Abaqus there, and copy result files back to the submit directory.
-
-The local WSL helper is:
-
-```text
-scripts/12_cluster_transfer_submit_fetch.sh
-```
-
-Submit after the `.inp` files exist:
-
-```bash
-./scripts/12_cluster_transfer_submit_fetch.sh submit_all 0 0
-```
-
-For the current Phase 0 cluster run, use the Phase 0 metadata and remote folder:
-
-```bash
-MGS_ROOT_REMOTE="/work/gbt/cda6556/ML residual correction Phase0" \
-MGS_MATRIX_CSV="data/extracted/run_metadata_phase0.csv" \
-bash scripts/12_cluster_transfer_submit_fetch.sh submit_all
-```
-
-For the separate Mohr-Coulomb Phase 0 cluster folder:
-
-```bash
-MGS_ROOT_REMOTE="/work/gbt/cda6556/ML residual correction Phase0 Mohr-Coulomb" \
-MGS_MATRIX_CSV="data/extracted/run_metadata_phase0_mohr_coulomb.csv" \
-bash scripts/12_cluster_transfer_submit_fetch.sh submit_all
-```
-
-Fetch results later:
-
-```bash
-./scripts/12_cluster_transfer_submit_fetch.sh fetch 0 0
-```
-
-For the current Phase 0 folder:
-
-```bash
-MGS_ROOT_REMOTE="/work/gbt/cda6556/ML residual correction Phase0" \
-MGS_MATRIX_CSV="data/extracted/run_metadata_phase0.csv" \
-bash scripts/12_cluster_transfer_submit_fetch.sh fetch
-```
-
-The SLURM script checks each `.inp` file. If it contains `*User Material`, it
-runs Abaqus with `user=vumat-hypo-2020-hst.for`. Otherwise, as for
-Mohr-Coulomb, it runs without compiling the VUMAT.
-
-The cluster scripts use standard SSH public-key authentication:
-
-```bash
-ssh cda6556@hpc3.rz.tuhh.de
-```
-
-No password, `sshpass`, or `StrictHostKeyChecking=no` is used. The helper
-scripts try `hpc3.rz.tuhh.de` first and then `hpc2.rz.tuhh.de` if needed. You
-can override the host list with:
-
-```bash
-MGS_CLUSTER_HOSTS="hpc3.rz.tuhh.de hpc2.rz.tuhh.de"
-```
-
-`scripts/13_cluster_open_terminal.sh` opens an interactive shell directly in
-the configured remote work folder.
-
-## ODB Stage
-
-After downloading the `.odb` files into `runs/{run_id}/`, the intended order is:
-
-```powershell
-python scripts\05_run_postprocessing.py --execute
-python scripts\06_resample_curves.py
-python scripts\07_build_ml_dataset.py
-python scripts\08_train_models.py
-python scripts\09_evaluate_models.py
-python scripts\11_make_plots.py
-```
-
-`04_postprocessing.py` is the Abaqus-side ODB extractor. It writes one CSV per
-run to:
-
-```text
-data/extracted/per_run_csv/{run_id}.csv
-```
-
-Required columns are:
-
-```text
-run_id, scenario_id, S, z_m, qb_MPa, qs_kPa, ALLKE, ALLIE, time_s, walltime_h
-```
-
-## Important Modelling Rules
-
-The `.inp` generation wrapper uses only rigid piles. For each run:
+For every generated input:
 
 ```text
 rho_scaled = S * rho_original
-g_scaled = g_original / S
+g_scaled   = g_original / S
 ```
 
-The ML inputs are built only from the high-S run. S=1 curves are used only to
-build the residual targets and evaluation reference.
+The matrix currently uses four relative-density levels (`ID=0.3, 0.6, 0.8,
+0.9`), three penetration velocities (`0.25, 0.50, 1.00 m/s`, equivalent to
+`25, 50, 100 cm/s`), and five scaling factors (`1, 10, 30, 50, 100`). That is
+`4 x 3 x 5 = 60` simulations per geometry and soil model.
+
+Field output is intentionally sparse to reduce ODB size. The generated
+`Einpressen` step uses:
+
+```text
+field_interval = step_time / 9
+```
+
+That gives nine field-output intervals:
+
+```text
+9 s step  -> *Output, field, time interval=1
+36 s step -> *Output, field, time interval=4
+```
+
+The history output interval is not changed from the previous high-frequency
+setting.
+
+Hypoplastic runs keep the reference two-layer void-ratio profile for all
+`DENS_REF` cases and use uniform void ratios for other densities. Mohr-Coulomb
+input files contain `*Elastic`, `*Mohr Coulomb`, and `*Mohr Coulomb Hardening`.
+Hypoplastic input files contain `*User Material`, `*Depvar`, and solution
+initial conditions.
+
+## Local Checks
+
+Syntax check:
+
+```powershell
+python -B -c "import pathlib; [compile(p.read_text(encoding='utf-8-sig'), str(p), 'exec') for p in pathlib.Path('scripts').glob('*.py')]"
+```
+
+Smoke-test one input file:
+
+```powershell
+python scripts\02_generate_inputs_from_reference.py --metadata data\extracted\run_metadata_phase0.csv --run-id G0_DENS_REF_V_REF_S001 --clean
+```

@@ -1,9 +1,9 @@
 # MGS Residual Correction
 
-This repository contains the Abaqus and Python workflow for residual correction
-of Mass-Gravity-Scaling simulations for rigid-pile penetration.
+This repository contains the simplified rigid-pile Mass-Gravity-Scaling
+residual-correction workflow.
 
-The active workflow lives in:
+The active project is:
 
 ```text
 mgs_rigid_correction/
@@ -15,6 +15,12 @@ Start with:
 mgs_rigid_correction/README.md
 ```
 
-Generated Abaqus files, ODB results, extracted curves, trained models, reports,
-logs, and local manuscript PDFs are intentionally ignored by Git. They should be
-regenerated locally or stored separately from the source-code repository.
+The active input-generation path patches a checked reference Abaqus `.inp`
+file. The previous Abaqus/CAE model-building generator is preserved under:
+
+```text
+mgs_rigid_correction/on_hold/complex_abaqus_generator/
+```
+
+Generated Abaqus runs, extracted curves, processed datasets, trained models,
+plots, reports, logs, local environments, and local PDFs are ignored by Git.

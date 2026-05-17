@@ -16,10 +16,10 @@ SSH_OPTS="${MGS_SSH_OPTS:--o ConnectTimeout=15}"
 ACTIVE_HOST=""
 
 ROOT_LOCAL="${MGS_ROOT_LOCAL:-.}"
-ROOT_REMOTE="${MGS_ROOT_REMOTE:-/work/gbt/${USER}/MGS_Rigid_Correction/PHASE1_FLAT}"
-MATRIX_CSV="${MGS_MATRIX_CSV:-data/extracted/run_metadata.csv}"
+ROOT_REMOTE="${MGS_ROOT_REMOTE:-/work/gbt/${USER}/MGS_Rigid_Correction/PHASE0_FLAT}"
+MATRIX_CSV="${MGS_MATRIX_CSV:-data/extracted/run_metadata_phase0.csv}"
 SLURM_SCRIPT_LOCAL="${MGS_SLURM_SCRIPT:-scripts/03_submit_slurm_array.sh}"
-USERRTN_LOCAL="${MGS_USERRTN:-../vumat-hypo-2020-hst.for}"
+USERRTN_LOCAL="${MGS_USERRTN:-abaqus/vumat-hypo-2020-hst.for}"
 CLEAR_REMOTE_INPUTS="${MGS_CLEAR_REMOTE_INPUTS:-1}"
 
 MODE="${1:-submit_all}"

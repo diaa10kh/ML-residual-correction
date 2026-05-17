@@ -8,18 +8,18 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from mgs_common import eta_grid_from_config, load_config, project_path, read_csv, resample_run, write_csv
+from mgs_common import eta_grid_from_config, load_config, project_path, read_csv, resolve_project_path, resample_run, write_csv
 
 
 def main():
     parser = argparse.ArgumentParser(description="Resample per-run extracted curves to a common eta grid.")
-    parser.add_argument("--metadata", default=project_path("data", "extracted", "run_metadata.csv"))
-    parser.add_argument("--matrix-config", default=project_path("configs", "matrix_phase1.yaml"))
+    parser.add_argument("--metadata", default=project_path("data", "extracted", "run_metadata_phase0.csv"))
+    parser.add_argument("--matrix-config", default=project_path("configs", "matrix_phase0.yaml"))
     parser.add_argument("--run-id", default="")
     args = parser.parse_args()
 
-    eta_grid = eta_grid_from_config(load_config(args.matrix_config))
-    metadata = read_csv(args.metadata)
+    eta_grid = eta_grid_from_config(load_config(resolve_project_path(args.matrix_config)))
+    metadata = read_csv(resolve_project_path(args.metadata))
     completed = 0
     skipped = 0
     for row in metadata:

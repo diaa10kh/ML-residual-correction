@@ -2,6 +2,7 @@ from __future__ import print_function
 
 import os
 import sys
+import argparse
 
 PY2 = sys.version_info[0] < 3
 
@@ -16,14 +17,6 @@ def native_path(path):
     return path
 
 
-def arg_value(flag):
-    if flag in sys.argv:
-        idx = sys.argv.index(flag)
-        if idx + 1 < len(sys.argv):
-            return sys.argv[idx + 1]
-    return ''
-
-
 def open_odb(path):
     path = native_path(path)
     try:
@@ -35,9 +28,10 @@ def open_odb(path):
 
 
 def main():
-    odb_path = arg_value('--odb')
-    if not odb_path:
-        raise RuntimeError('Missing --odb path')
+    parser = argparse.ArgumentParser(description='Print available ODB history output names.')
+    parser.add_argument('--odb', required=True, help='ODB file to inspect. Run with Abaqus Python.')
+    args = parser.parse_args()
+    odb_path = args.odb
     if not os.path.exists(odb_path):
         raise RuntimeError('ODB not found: %s' % odb_path)
     odb = open_odb(odb_path)

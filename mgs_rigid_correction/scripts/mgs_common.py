@@ -68,9 +68,19 @@ def project_path(*parts):
     return os.path.join(project_root(), *parts)
 
 
+def resolve_project_path(path):
+    if not path or os.path.isabs(path):
+        return path
+    return os.path.abspath(os.path.join(project_root(), path.replace("\\", os.sep)))
+
+
 def mkdir_p(path):
     if path and not os.path.isdir(path):
-        os.makedirs(path)
+        try:
+            os.makedirs(path)
+        except OSError:
+            if not os.path.isdir(path):
+                raise
 
 
 def ensure_project_dirs():
@@ -168,7 +178,7 @@ def void_ratio_settings(config, scenario_id, density_id, ID_percent):
     settings = config.get("void_ratio", {})
     e_min = as_float(settings.get("e_min"), 0.49)
     e_max = as_float(settings.get("e_max"), 0.76)
-    reference_scenario_id = to_str(settings.get("reference_scenario_id", "G0_DENS_HIGH_V_REF"))
+    reference_scenario_id = to_str(settings.get("reference_scenario_id", "G0_DENS_REF_V_REF"))
     reference_density_id = to_str(settings.get("reference_density_id", ""))
     reference_profile = settings.get("reference_profile", {})
     use_reference = scenario_id == reference_scenario_id
@@ -254,7 +264,7 @@ def row_to_jsonable(row):
 
 
 def expand_matrix(config):
-    reference_velocity = as_float(config.get("reference_velocity_m_per_s"), 0.020)
+    reference_velocity = as_float(config.get("reference_velocity_m_per_s"), 0.5)
     phase = to_str(config.get("phase", "matrix"))
     soil_model = to_str(config.get("soil_model", "Hypoplastisch"))
     run_id_prefix = to_str(config.get("run_id_prefix", "")).strip("_")

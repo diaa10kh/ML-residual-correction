@@ -6,8 +6,9 @@ import subprocess
 import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-if SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, SCRIPT_DIR)
+ACTIVE_SCRIPT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, os.pardir, os.pardir, "scripts"))
+if ACTIVE_SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, ACTIVE_SCRIPT_DIR)
 
 from mgs_common import mkdir_p, project_path, read_csv, row_to_jsonable, write_json
 
@@ -53,8 +54,11 @@ def run_abaqus(abaqus_cmd, generator_script, case_config):
 
 def main():
     parser = argparse.ArgumentParser(description="Create Abaqus case JSON files and optionally write .inp files.")
-    parser.add_argument("--metadata", default=project_path("data", "extracted", "run_metadata.csv"))
-    parser.add_argument("--generator-script", default=os.path.abspath(os.path.join(project_path(), os.pardir, "00_3D_CPT_deek.py")))
+    parser.add_argument("--metadata", default=project_path("data", "extracted", "run_metadata_phase0.csv"))
+    parser.add_argument(
+        "--generator-script",
+        default=project_path("on_hold", "complex_abaqus_generator", "00_3D_CPT_deek.py"),
+    )
     parser.add_argument("--abaqus-cmd", default="abaqus")
     parser.add_argument("--run-id", default="")
     parser.add_argument("--limit", type=int, default=0)

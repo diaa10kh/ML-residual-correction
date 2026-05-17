@@ -8,7 +8,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from mgs_common import as_float, mkdir_p, project_path, read_csv
+from mgs_common import as_float, mkdir_p, project_path, read_csv, resolve_project_path
 
 
 SOIL_BASE_DENSITY = 1.64
@@ -62,25 +62,6 @@ def material_block_bounds(lines, material_name):
     return start, stop
 
 
-def hypoplastic_material_lines(row):
-    density = SOIL_BASE_DENSITY * as_float(row["S"])
-    return [
-        "*Material, name=HYPO-VW96-Sand\n",
-        "*Density\n",
-        " %s,\n" % abaqus_number(density),
-        "*Depvar\n",
-        "     20,\n",
-        "*User Material, constants=16\n",
-        " 0.549779,      0.3,  1.3e+06,    0.324,     0.49,     0.76,     0.86,      0.4\n",
-        "       1.,       2.,       5.,   0.0001,      0.7,       1.,       0., 0.615854\n",
-    ]
-
-
-def patch_soil_material(lines, row):
-    start, stop = material_block_bounds(lines, "HYPO-VW96-Sand")
-    lines[start:stop] = hypoplastic_material_lines(row)
-
-
 def patch_steel_material(lines, row):
     start, stop = material_block_bounds(lines, "Stahl")
     density = STEEL_BASE_DENSITY * as_float(row["S"])
@@ -126,9 +107,11 @@ def patch_velocity_timing(lines, row):
 
 
 def einpressen_output_intervals(step_time):
+    # Save nine field-output intervals over the Einpressen step.
+    field_interval = step_time / 9.0
     if abs(step_time - 9.0) < 1.0e-9:
-        return 0.1, 0.01
-    return step_time / 100.0, step_time / 1000.0
+        return field_interval, 0.01
+    return field_interval, step_time / 1000.0
 
 
 def patch_einpressen_output_intervals(lines, row):
@@ -163,6 +146,66 @@ def patch_einpressen_output_intervals(lines, row):
 
     lines[field_index] = "*Output, field, time interval=%s\n" % abaqus_number(field_interval)
     lines[history_index] = "*Output, history, time interval=%s\n" % abaqus_number(history_interval)
+
+
+def patch_mc_soil_material(lines, row):
+    start, stop = material_block_bounds(lines, "HYPO-VW96-Sand")
+    density = as_float(row["mc_density"]) * as_float(row["S"])
+    elastic_E = as_float(row["mc_E"])
+    elastic_nu = as_float(row["mc_nu"])
+    phi = as_float(row["mc_phi"])
+    psi = as_float(row["mc_psi"])
+    cohesion = as_float(row["mc_cohesion"])
+    plastic_strain = as_float(row.get("mc_plastic_strain"), 0.0)
+
+    density_index = find_keyword(lines, "*Density", start, stop)
+    elastic_index = find_keyword(lines, "*Elastic", start, stop)
+    mc_index = find_keyword(lines, "*Mohr Coulomb", start, stop)
+    hardening_index = find_keyword(lines, "*Mohr Coulomb Hardening", start, stop)
+    for label, index in [
+        ("Density", density_index),
+        ("Elastic", elastic_index),
+        ("Mohr Coulomb", mc_index),
+        ("Mohr Coulomb Hardening", hardening_index),
+    ]:
+        if index < 0:
+            raise RuntimeError("%s keyword not found in HYPO-VW96-Sand block" % label)
+
+    set_next_data_line(lines, density_index, " %s,\n" % abaqus_number(density))
+    set_next_data_line(
+        lines,
+        elastic_index,
+        "%s, %s\n" % (abaqus_number(elastic_E), abaqus_number(elastic_nu)),
+    )
+    set_next_data_line(
+        lines,
+        mc_index,
+        " %s,%s\n" % (abaqus_number(phi), abaqus_number(psi)),
+    )
+    set_next_data_line(
+        lines,
+        hardening_index,
+        " %s,%s\n" % (abaqus_number(cohesion), abaqus_number(plastic_strain)),
+    )
+
+
+def hypoplastic_material_lines(row):
+    density = SOIL_BASE_DENSITY * as_float(row["S"])
+    return [
+        "*Material, name=HYPO-VW96-Sand\n",
+        "*Density\n",
+        " %s,\n" % abaqus_number(density),
+        "*Depvar\n",
+        "     20,\n",
+        "*User Material, constants=16\n",
+        " 0.549779,      0.3,  1.3e+06,    0.324,     0.49,     0.76,     0.86,      0.4\n",
+        "       1.,       2.,       5.,   0.0001,      0.7,       1.,       0., 0.615854\n",
+    ]
+
+
+def patch_hypoplastic_soil_material(lines, row):
+    start, stop = material_block_bounds(lines, "HYPO-VW96-Sand")
+    lines[start:stop] = hypoplastic_material_lines(row)
 
 
 def remove_solution_initial_conditions(lines):
@@ -215,15 +258,44 @@ def patch_solution_initial_conditions(lines, row):
     lines[vf_index + 1:vf_index + 1] = solution_initial_condition_lines(row)
 
 
-def patch_template(template_lines, row):
-    lines = list(template_lines)
-    patch_soil_material(lines, row)
+def patch_common_template(lines, row):
     patch_steel_material(lines, row)
     patch_gravity(lines, row)
     patch_velocity_timing(lines, row)
     patch_einpressen_output_intervals(lines, row)
-    patch_solution_initial_conditions(lines, row)
+
+
+def patch_template(template_lines, row):
+    lines = list(template_lines)
+    soil_model = row.get("soil_model", "")
+    if soil_model == "Mohr-Coulomb":
+        patch_mc_soil_material(lines, row)
+    elif soil_model == "Hypoplastisch":
+        patch_hypoplastic_soil_material(lines, row)
+        patch_solution_initial_conditions(lines, row)
+    else:
+        raise RuntimeError("Unsupported soil_model for %s: %s" % (row.get("run_id"), soil_model))
+    patch_common_template(lines, row)
     return lines
+
+
+def verify_reference(lines):
+    required = [
+        "*Material, name=HYPO-VW96-Sand",
+        "*Material, name=Stahl",
+        "*Amplitude, name=Amp_Einpressen",
+        "*Step, name=Einpressen, nlgeom=YES",
+    ]
+    text = "".join(lines).lower()
+    for keyword in required:
+        if keyword.lower() not in text:
+            raise RuntimeError("Reference input is missing required keyword: %s" % keyword)
+    forbidden = ["*User Material", "*Depvar", "*Initial Conditions, type=SOLUTION"]
+    for keyword in forbidden:
+        if keyword.lower() in text:
+            raise RuntimeError(
+                "Reference input must be the Mohr-Coulomb baseline; found %s" % keyword
+            )
 
 
 def remove_if_exists(path):
@@ -231,65 +303,99 @@ def remove_if_exists(path):
         os.remove(path)
 
 
-def clean_run_dir(run_dir):
-    basename = os.path.basename(run_dir)
-    if not basename.startswith("G0_"):
-        raise RuntimeError("Refusing to clean non-hypoplastic run dir: %s" % run_dir)
+def is_inside(path, root):
+    path = os.path.normcase(os.path.abspath(path))
+    root = os.path.normcase(os.path.abspath(root))
+    return path == root or path.startswith(root + os.sep)
+
+
+def clean_run_dir(run_dir, run_id):
+    run_dir = os.path.abspath(run_dir)
+    runs_root = project_path("runs")
+    if not is_inside(run_dir, runs_root):
+        raise RuntimeError("Refusing to clean outside runs folder: %s" % run_dir)
+    if os.path.basename(run_dir) != run_id:
+        raise RuntimeError("Refusing to clean run folder with unexpected name: %s" % run_dir)
     if not os.path.isdir(run_dir):
         mkdir_p(run_dir)
         return 0
+    removable = set([
+        run_id + ".inp",
+        "case_config.json",
+        "generate_input.ps1",
+        "abaqus_input_generation.log",
+    ])
     removed = 0
     for name in os.listdir(run_dir):
         path = os.path.join(run_dir, name)
-        if os.path.isfile(path) or os.path.islink(path):
+        if name in removable and (os.path.isfile(path) or os.path.islink(path)):
             os.remove(path)
             removed += 1
     return removed
 
 
+def selected_rows(rows, run_id, limit, soil_model):
+    out = []
+    for row in rows:
+        if run_id and row.get("run_id") != run_id:
+            continue
+        if soil_model and row.get("soil_model") != soil_model:
+            continue
+        out.append(row)
+        if limit and len(out) >= limit:
+            break
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Create hypoplastic Phase 0 .inp files by patching a reference .inp."
+        description="Create Abaqus .inp files by patching a checked reference input file."
     )
-    parser.add_argument(
-        "--metadata",
-        default=project_path("data", "extracted", "run_metadata_phase0.csv"),
-    )
+    parser.add_argument("--metadata", default=project_path("data", "extracted", "run_metadata_phase0.csv"))
     parser.add_argument(
         "--reference-inp",
-        default=os.path.abspath(
-            os.path.join(project_path(), os.pardir, "CPT_90_MCM_einpressen_Voll_S001.inp")
-        ),
+        default=project_path("reference_inputs", "CPT_90_MCM_einpressen_Voll_S001.inp"),
     )
-    parser.add_argument("--clean", action="store_true", help="Remove old files from G0 run folders first.")
+    parser.add_argument("--run-id", default="")
+    parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--soil-model", choices=["Hypoplastisch", "Mohr-Coulomb"], default="")
+    parser.add_argument("--clean", action="store_true", help="Remove old files from selected run folders first.")
     parser.add_argument(
         "--clean-derived-data",
         action="store_true",
-        help="Remove stale extracted and resampled hypoplastic CSVs referenced by the metadata.",
+        help="Remove stale extracted and resampled CSVs referenced by the selected metadata rows.",
     )
     parser.add_argument(
         "--vumat",
-        default=os.path.abspath(os.path.join(project_path(), os.pardir, "vumat-hypo-2020-hst.for")),
-        help="VUMAT file checked for later cluster submission.",
+        default=project_path("abaqus", "vumat-hypo-2020-hst.for"),
+        help="VUMAT file checked when hypoplastic rows are selected.",
     )
     args = parser.parse_args()
 
-    rows = read_csv(args.metadata)
+    metadata_path = resolve_project_path(args.metadata)
+    reference_inp = resolve_project_path(args.reference_inp)
+    vumat = resolve_project_path(args.vumat)
+
+    rows = selected_rows(read_csv(metadata_path), args.run_id, args.limit, args.soil_model)
     if not rows:
-        raise SystemExit("No rows in metadata: %s" % args.metadata)
-    if not os.path.exists(args.vumat):
-        raise SystemExit("VUMAT file not found: %s" % args.vumat)
-    with open(args.reference_inp, "r") as handle:
+        raise SystemExit("No rows selected from %s" % metadata_path)
+    if not os.path.exists(reference_inp):
+        raise SystemExit("Reference input not found: %s" % reference_inp)
+    if any(row.get("soil_model") == "Hypoplastisch" for row in rows) and not os.path.exists(vumat):
+        raise SystemExit("VUMAT file not found: %s" % vumat)
+
+    with open(reference_inp, "r") as handle:
         template_lines = handle.readlines()
+    verify_reference(template_lines)
 
     removed_files = 0
     written = 0
+    by_model = {}
     for row in rows:
-        if row.get("soil_model") != "Hypoplastisch" or not row.get("run_id", "").startswith("G0_"):
-            raise RuntimeError("Unexpected non-hypoplastic row: %s" % row.get("run_id"))
+        run_id = row["run_id"]
         run_dir = row["run_dir"]
         if args.clean:
-            removed_files += clean_run_dir(run_dir)
+            removed_files += clean_run_dir(run_dir, run_id)
         else:
             mkdir_p(run_dir)
         if args.clean_derived_data:
@@ -300,11 +406,15 @@ def main():
         with open(output, "w") as handle:
             handle.writelines(patched)
         written += 1
+        by_model[row.get("soil_model", "")] = by_model.get(row.get("soil_model", ""), 0) + 1
 
-    print("Reference: %s" % args.reference_inp)
-    print("VUMAT: %s" % args.vumat)
+    print("Reference: %s" % reference_inp)
+    if any(row.get("soil_model") == "Hypoplastisch" for row in rows):
+        print("VUMAT: %s" % vumat)
     print("Removed %d old run-folder file(s)." % removed_files)
-    print("Wrote %d patched hypoplastic input file(s)." % written)
+    for soil_model in sorted(by_model):
+        print("Wrote %d %s input file(s)." % (by_model[soil_model], soil_model))
+    print("Wrote %d total input file(s)." % written)
 
 
 if __name__ == "__main__":

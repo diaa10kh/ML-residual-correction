@@ -103,7 +103,11 @@ def write_rows(path, rows):
         'time_s',
         'walltime_h',
     ]
-    with open(path, 'wb') as handle:
+    if PY2:
+        handle = open(path, 'wb')
+    else:
+        handle = open(path, 'w', newline='')
+    with handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction='ignore')
         writer.writeheader()
         for row in rows:

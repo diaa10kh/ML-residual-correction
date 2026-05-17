@@ -1,21 +1,22 @@
 """
-02_train_correction_model.py
+08_train_correction_model.py
 ----------------------------
 Trains gradient boosting models to predict the residual error
-between fast runs (S=10, S=100) and the reference (S=1).
+between mass-scaled runs and the reference (S=1).
 
 Reference is now S=1.
 
-Input:  data/real_dataset.csv  (built by 01_build_dataset.py)
-Output: results/model_qb.pkl
-        results/metrics.csv
-        plots/  (all diagnostic and sensitivity plots)
+Input:  data/processed/ml/{mohr_coulomb,hypoplastic}/real_dataset.csv
+Output: results/ml/{mohr_coulomb,hypoplastic}/model_qb.pkl
+        results/ml/{mohr_coulomb,hypoplastic}/metrics.csv
+        plots/ml/{mohr_coulomb,hypoplastic}/
 """
 
 import numpy as np
 import pandas as pd
 import pickle
 import os
+import argparse
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.model_selection import GroupShuffleSplit
@@ -52,21 +53,21 @@ def _find_root():
 _ROOT, _data_name = _find_root()
 _DATA_FOLDER   = os.path.join(_ROOT, _data_name)
 
-DATA_ROOT      = os.path.join(_DATA_FOLDER, "processed", "student")
+DATA_ROOT      = os.path.join(_DATA_FOLDER, "processed", "ml")
 DATA_PATH      = os.path.join(DATA_ROOT, "combined", "real_dataset.csv")
-RESULTS_ROOT   = os.path.join(_ROOT, "results", "student")
-PLOTS_ROOT     = os.path.join(_ROOT, "plots", "student")
+RESULTS_ROOT   = os.path.join(_ROOT, "results", "ml")
+PLOTS_ROOT     = os.path.join(_ROOT, "plots", "ml")
 RESULTS_DIR    = os.path.join(RESULTS_ROOT, "combined")
 PLOTS_DIR      = os.path.join(PLOTS_ROOT, "combined")
 SHALLOW_CUTOFF = 2.0
 
 SOIL_MODEL_RUNS = [
     {
-        "name": "mcm",
-        "label": "MCM",
-        "data_path": os.path.join(DATA_ROOT, "mcm", "real_dataset.csv"),
-        "results_dir": os.path.join(RESULTS_ROOT, "mcm"),
-        "plots_dir": os.path.join(PLOTS_ROOT, "mcm"),
+        "name": "mohr_coulomb",
+        "label": "Mohr-Coulomb",
+        "data_path": os.path.join(DATA_ROOT, "mohr_coulomb", "real_dataset.csv"),
+        "results_dir": os.path.join(RESULTS_ROOT, "mohr_coulomb"),
+        "plots_dir": os.path.join(PLOTS_ROOT, "mohr_coulomb"),
     },
     {
         "name": "hypoplastic",
@@ -77,19 +78,10 @@ SOIL_MODEL_RUNS = [
     },
 ]
 
-os.makedirs(RESULTS_DIR, exist_ok=True)
-os.makedirs(PLOTS_DIR,   exist_ok=True)
-
-print(f"ROOT:     {_ROOT}")
-print(f"DATA:     {_DATA_FOLDER}")
-print(f"RESULTS:  {RESULTS_DIR}")
-print(f"PLOTS:    {PLOTS_DIR}")
-
 # ── Improvement 3: train separate models per S level ─────────────────────────
-# S=10 and S=100 have different error patterns — separate models learn each cleanly
-# Set to True to train one model per S, False to train one combined model
-SEPARATE_S_MODELS = False   # Switch to True when 400-file dataset is available
-                            # With only 9 scenarios separate models overfit badly
+# Different S levels can have different error patterns; separate models can learn that cleanly.
+# Set to True to train one model per S, False to train one combined model.
+SEPARATE_S_MODELS = False   # Keep False until enough scenarios are available for each S level.
 
 MODEL_PARAMS = dict(
     max_iter          = 600,
@@ -152,7 +144,7 @@ def compute_metrics(y_true, y_pred, label=""):
     )) * 100 if mask_mape.sum() > 0 else np.nan
 
     return {"label": label, "RMSE": rmse, "MAE": mae,
-            "NRMSE": nrmse, "MAPE(%)": mpe, "MAPE(%)": mape,
+            "NRMSE": nrmse, "MPE(%)": mpe, "MAPE(%)": mape,
             "n": len(y_true)}
 
 
@@ -177,11 +169,8 @@ def train(df_train, df_val, target, tag):
 
 def plot_correction_curves(df_test, model_qb, model_qs=None, n=9):
     """
-    One plot per scenario. Each plot has 4 lines:
-      - S=10 fast run (orange dashed)
-      - S=100 fast run (red dashed)
-      - ML corrected (green solid) — uses S=100 correction
-      - Reference S=1 (dark solid)
+    One plot per scenario. It shows all available mass-scaled curves and the
+    ML-corrected curve for the largest available S level.
     """
     df = df_test.copy()
     if "qb_corrected" not in df.columns:
@@ -213,32 +202,25 @@ def plot_correction_curves(df_test, model_qb, model_qs=None, n=9):
         ID  = sub["ID"].iloc[0]
         v   = sub["v_pen"].iloc[0]
 
-        # S=10 fast run
-        s10 = sub[sub["S"] == 10].sort_values("depth")
-        # S=100 fast run
-        s100 = sub[sub["S"] == 100].sort_values("depth")
-
-        if len(s10) == 0 or len(s100) == 0:
+        s_values = sorted(int(s) for s in sub["S"].dropna().unique())
+        if not s_values:
             ax.set_visible(False)
             continue
 
-        # Reference is same for both — use S=10 ref
-        ref_sm  = s10["qb_ref"].values
-        s10_sm  = s10["qb_fast"].values
-        s100_sm = s100["qb_fast"].values
-        corr_sm = s100["qb_corrected"].values
-
-        depth_s10  = s10["depth"].values
-        depth_s100 = s100["depth"].values
-
-        ax.plot(ref_sm,  depth_s10,  "-",  color="#2c3e50", lw=2.0, alpha=0.9,
+        reference_group = sub[sub["S"] == s_values[0]].sort_values("depth")
+        ax.plot(reference_group["qb_ref"].values, reference_group["depth"].values,
+                "-", color="#2c3e50", lw=2.0, alpha=0.9,
                 label="Reference (S=1)")
-        ax.plot(s10_sm,  depth_s10,  "--", color="#f39c12", lw=1.5,
-                label="Fast (S=10)")
-        ax.plot(s100_sm, depth_s100, "--", color="#e74c3c", lw=1.5,
-                label="Fast (S=100)")
-        ax.plot(corr_sm, depth_s100, "-",  color="#2ecc71", lw=2.5,
-                label="ML Corrected")
+
+        colors = ["#f39c12", "#d35400", "#e74c3c", "#8e44ad", "#3498db"]
+        for color, S_val in zip(colors, s_values):
+            s_group = sub[sub["S"] == S_val].sort_values("depth")
+            ax.plot(s_group["qb_fast"].values, s_group["depth"].values,
+                    "--", color=color, lw=1.4, label=f"Mass-scaled (S={S_val})")
+
+        correction_group = sub[sub["S"] == s_values[-1]].sort_values("depth")
+        ax.plot(correction_group["qb_corrected"].values, correction_group["depth"].values,
+                "-", color="#2ecc71", lw=2.5, label=f"ML corrected (S={s_values[-1]})")
 
         ax.invert_yaxis()
         ax.set_xlabel("Base resistance qb [MPa]", fontsize=9)
@@ -292,25 +274,6 @@ def plot_error_by_depth(df_test, model_qb, model_qs=None):
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  Saved → {out}")
-
-
-def compute_s10_baseline(df):
-    """
-    Compute MAPE of S=10 vs S=1 reference.
-    This becomes the new benchmark threshold —
-    if corrected S=100 reaches this level, correction is working.
-    S=10 is already validated in the paper as acceptable,
-    so matching S=10 accuracy means our correction is sufficient.
-    """
-    sub  = df[df["S"] == 10].copy()
-    mask = sub["qb_ref"].abs() > 0.5
-    if mask.sum() == 0:
-        return None
-    mpe = np.mean(np.abs(
-        (sub.loc[mask,"qb_ref"] - sub.loc[mask,"qb_fast"])
-        / sub.loc[mask,"qb_ref"]
-    )) * 100
-    return round(mpe, 2)
 
 
 def compute_mape_group(df, group_col, fc, cc, rc):
@@ -469,7 +432,7 @@ def plot_sensitivity(df_test, model_qb, model_qs=None):
 def plot_publication_correction_curve(df_test, model_qb, model_qs=None):
     """
     Plot A — One file per S level showing best performing scenario.
-    Uses data already smoothed once in student_01_build_dataset.py.
+    Uses data already smoothed once in 07_build_ml_dataset.py.
     """
     df = df_test.copy()
     if "qb_corrected" not in df.columns:
@@ -590,6 +553,8 @@ def plot_error_reduction_summary(df_test, model_qb, model_qs=None):
     out = f"{PLOTS_DIR}/pub_B_error_reduction_summary.png"
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
+    print(f"  Saved -> {out}")
+    return
     print(f"  Saved → {out}")
     """
     Plot B — Error reduction summary bar chart.
@@ -760,6 +725,8 @@ def plot_depth_error_profile(df_test, model_qb, model_qs=None):
     out = f"{PLOTS_DIR}/pub_D_depth_error_profile.png"
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
+    print(f"  Saved -> {out}")
+    return
     print(f"  Saved → {out}")
     """
     Plot D — Continuous depth profile of mean error with confidence band.
@@ -1018,8 +985,8 @@ def train_soil_model(label, data_path, results_dir, plots_dir):
             pickle.dump(models_qb, f)
         print("  Saved separate S models → results/models_qb_per_S.pkl")
 
-        # Also keep single model interface for inference script compatibility
-        # Use S=100 model as default (most important use case)
+        # Also keep single model interface for inference script compatibility.
+        # Use the largest S model as default.
         default_S = max(S_vals)
         with open(f"{RESULTS_DIR}/model_qb.pkl", "wb") as f:
             pickle.dump(models_qb[default_S], f)
@@ -1122,7 +1089,19 @@ def train_soil_model(label, data_path, results_dir, plots_dir):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Train residual correction models from paired ML datasets.")
+    parser.add_argument(
+        "--soil-model",
+        choices=["all", "mohr_coulomb", "mcm", "hypoplastic"],
+        default="all",
+        help="Limit training to one soil model. 'mcm' is kept as an alias for mohr_coulomb.",
+    )
+    args = parser.parse_args()
+    selected_soil_model = "mohr_coulomb" if args.soil_model == "mcm" else args.soil_model
+
     for run in SOIL_MODEL_RUNS:
+        if selected_soil_model != "all" and run["name"] != selected_soil_model:
+            continue
         train_soil_model(
             label=run["label"],
             data_path=run["data_path"],
