@@ -10,6 +10,13 @@ Run commands from this folder unless noted otherwise:
 cd mgs_rigid_correction
 ```
 
+On Windows, if `python` opens the Microsoft Store instead of the project
+environment, use the repository virtual environment explicitly:
+
+```powershell
+..\.venv\Scripts\python.exe -m pip install -r ..\requirements.txt
+```
+
 ## Active Files
 
 ```text
@@ -138,6 +145,15 @@ python scripts\05_run_postprocessing.py --metadata data\extracted\run_metadata_p
 python scripts\06_resample_curves.py --metadata data\extracted\run_metadata_phase0.csv --matrix-config configs\matrix_phase0.yaml
 python scripts\07_build_ml_dataset.py
 python scripts\08_train_correction_model.py
+```
+
+`07_build_ml_dataset.py` validates the extracted CSV files against the metadata
+matrix. For the current Phase 0 matrix it expects 60 extracted CSVs per soil
+model. It stops if files are missing, so stale partial results are not trained
+by accident. For an exploratory partial-data build only, add:
+
+```powershell
+python scripts\07_build_ml_dataset.py --allow-partial
 ```
 
 Both ML scripts also accept `--soil-model mohr_coulomb` or

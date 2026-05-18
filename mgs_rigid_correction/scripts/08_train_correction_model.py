@@ -998,7 +998,8 @@ def train_soil_model(label, data_path, results_dir, plots_dir):
         tr_idx, te_idx = next(splitter.split(
             df_train_pool, groups=df_train_pool["scenario_id"]))
         df_tr_all = df_train_pool.iloc[tr_idx]
-        df_test   = df.iloc[te_idx].copy()
+        test_scenarios = set(df_train_pool.iloc[te_idx]["scenario_id"])
+        df_test = df[df["scenario_id"].isin(test_scenarios)].copy()
 
         splitter2 = GroupShuffleSplit(n_splits=1, test_size=0.15, random_state=0)
         tr2, va2  = next(splitter2.split(df_tr_all, groups=df_tr_all["scenario_id"]))

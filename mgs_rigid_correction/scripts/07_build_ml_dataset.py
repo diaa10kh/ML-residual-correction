@@ -33,6 +33,7 @@ PARAMETER ENCODING IN FILENAME:
 import pandas as pd
 import numpy as np
 import argparse
+import csv
 import os
 import glob
 import sys
@@ -69,12 +70,14 @@ SOIL_MODEL_RUNS = [
         "name": "mohr_coulomb",
         "label": "Mohr-Coulomb",
         "patterns": ["MC_*.csv"],
+        "metadata_path": os.path.join(_DATA_FOLDER, "extracted", "run_metadata_phase0_mohr_coulomb.csv"),
         "out_path": os.path.join(OUT_ROOT, "mohr_coulomb", "real_dataset.csv"),
     },
     {
         "name": "hypoplastic",
         "label": "Hypoplastic",
         "patterns": ["G0_*.csv"],
+        "metadata_path": os.path.join(_DATA_FOLDER, "extracted", "run_metadata_phase0.csv"),
         "out_path": os.path.join(OUT_ROOT, "hypoplastic", "real_dataset.csv"),
     },
 ]
@@ -177,8 +180,46 @@ def interpolate_to_grid(df, depth_col="z_m", val_cols=["qb_MPa", "qs_kPa"],
 
 # ─── Main pipeline ───────────────────────────────────────────────────────────
 
-def build_dataset(label="Combined", patterns=None, out_path=OUT_PATH):
+def expected_csvs_from_metadata(metadata_path):
+    if not metadata_path or not os.path.exists(metadata_path):
+        return []
+    expected = []
+    with open(metadata_path, "r", newline="") as handle:
+        for row in csv.DictReader(handle):
+            run_id = row.get("run_id", "")
+            if run_id:
+                expected.append(os.path.join(RAW_DIR, run_id + ".csv"))
+    return expected
+
+
+def validate_expected_csvs(label, metadata_path, allow_partial):
+    expected = expected_csvs_from_metadata(metadata_path)
+    if not expected:
+        print(f"WARNING: No metadata validation available for {label}: {metadata_path}")
+        return
+
+    missing = [path for path in expected if not os.path.exists(path)]
+    if not missing:
+        print(f"Metadata validation for {label}: all {len(expected)} expected CSV files found")
+        return
+
+    message = (
+        f"{label}: missing {len(missing)} of {len(expected)} expected extracted CSV files. "
+        "Run/postprocess the full matrix first, or rerun with --allow-partial for an exploratory build."
+    )
+    if allow_partial:
+        print("WARNING: " + message)
+        for path in missing[:10]:
+            print(f"  missing: {os.path.basename(path)}")
+        if len(missing) > 10:
+            print(f"  ... {len(missing) - 10} more missing file(s)")
+        return
+    raise SystemExit("ERROR: " + message)
+
+
+def build_dataset(label="Combined", patterns=None, out_path=OUT_PATH, metadata_path=None, allow_partial=False):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    validate_expected_csvs(label, metadata_path, allow_partial)
 
     # Find all CSV files — handles both MC_G0_ and G0_ naming conventions
     if patterns is None:
@@ -362,6 +403,11 @@ def main():
         default="all",
         help="Limit dataset building to one soil model. 'mcm' is kept as an alias for mohr_coulomb.",
     )
+    parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="Build from available CSV files even when metadata says expected runs are missing.",
+    )
     args = parser.parse_args()
     selected_soil_model = "mohr_coulomb" if args.soil_model == "mcm" else args.soil_model
 
@@ -376,6 +422,8 @@ def main():
             label=run["label"],
             patterns=run["patterns"],
             out_path=run["out_path"],
+            metadata_path=run["metadata_path"],
+            allow_partial=args.allow_partial,
         )
 
 
