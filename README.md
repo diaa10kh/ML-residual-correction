@@ -15,6 +15,12 @@ Start with:
 mgs_rigid_correction/README.md
 ```
 
+The current ML dataset, training, metrics, and plot outputs are documented in:
+
+```text
+mgs_rigid_correction/docs/current_ml_pipeline.md
+```
+
 The active input-generation path patches a checked reference Abaqus `.inp`
 file. The previous Abaqus/CAE model-building generator is preserved under:
 

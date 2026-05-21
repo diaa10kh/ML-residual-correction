@@ -1,5 +1,9 @@
 # Docs
 
+`current_ml_pipeline.md` documents the active dataset, training, metrics, and
+plotting workflow.
+
 `ml_residual_correction_plan.md` is the original planning document. It is kept
-as background context and may reference older script names. The active workflow
-is documented in `../README.md`.
+as background context only and may reference older script names, old metrics,
+and inactive folder structures. For running the project, use `../README.md` and
+`current_ml_pipeline.md`.

@@ -1,5 +1,10 @@
 # Rigid-pile MGS correction plan
 
+> Historical note: this file is the original planning document. It is kept for
+> background only and contains older script names, metrics, and folder ideas.
+> The active workflow is documented in `../README.md` and
+> `current_ml_pipeline.md`.
+
 ## Implementation addendum
 
 The workflow has been implemented in `mgs_rigid_correction/` with the following execution split:

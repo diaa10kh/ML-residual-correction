@@ -31,7 +31,7 @@ os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
 warnings.filterwarnings("ignore")
 
 from sklearn.ensemble import HistGradientBoostingRegressor
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import GroupKFold, GroupShuffleSplit
 
 import matplotlib
@@ -53,7 +53,6 @@ PLOTS_ROOT = PROJECT_ROOT / "plots" / "ml"
 RESULTS_DIR = RESULTS_ROOT / "combined"
 PLOTS_DIR = PLOTS_ROOT / "combined"
 
-SHALLOW_CUTOFF = 2.0
 SEPARATE_S_MODELS = False
 
 MODEL_PARAMS = dict(
@@ -135,25 +134,11 @@ FEATURE_NAMES = list(
 def compute_metrics(y_true, y_pred, label: str = ""):
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
-    rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
-    mae = float(mean_absolute_error(y_true, y_pred))
-    nrmse = float(rmse / (np.nanmax(y_true) - np.nanmin(y_true) + 1e-9))
-
-    mask = np.abs(y_true) > 0.5
-    if mask.sum() > 0:
-        mpe = float(np.mean((y_true[mask] - y_pred[mask]) / y_true[mask]) * 100)
-        mape = float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100)
-    else:
-        mpe = np.nan
-        mape = np.nan
 
     return {
         "label": label,
-        "RMSE": rmse,
-        "MAE": mae,
-        "NRMSE": nrmse,
-        "MPE(%)": mpe,
-        "MAPE(%)": mape,
+        "WAPE(%)": wape_error(y_true, y_pred),
+        "RMSE": rmse_error(y_true, y_pred),
         "n": len(y_true),
     }
 
@@ -227,23 +212,31 @@ def corrected_frame(df: pd.DataFrame, model_qb) -> pd.DataFrame:
     return out
 
 
-def percentage_error(reference, estimate):
+def rmse_error(reference, estimate):
     reference = np.asarray(reference, dtype=float)
     estimate = np.asarray(estimate, dtype=float)
-    mask = np.abs(reference) > 0.5
-    if mask.sum() == 0:
+    if len(reference) == 0:
         return np.nan
-    return float(np.mean(np.abs((reference[mask] - estimate[mask]) / reference[mask])) * 100)
+    return float(np.sqrt(np.mean((estimate - reference) ** 2)))
 
 
-def compute_mape_group(df: pd.DataFrame, group_col: str, fast_col: str, corr_col: str, ref_col: str):
+def wape_error(reference, estimate):
+    reference = np.asarray(reference, dtype=float)
+    estimate = np.asarray(estimate, dtype=float)
+    denominator = float(np.sum(np.abs(reference)))
+    if denominator <= 1e-12:
+        return np.nan
+    return float(np.sum(np.abs(reference - estimate)) / denominator * 100.0)
+
+
+def compute_wape_group(df: pd.DataFrame, group_col: str, fast_col: str, corr_col: str, ref_col: str):
     rows = []
     for val, grp in df.groupby(group_col):
         rows.append(
             {
                 group_col: val,
-                "before": percentage_error(grp[ref_col], grp[fast_col]),
-                "after": percentage_error(grp[ref_col], grp[corr_col]),
+                "before": wape_error(grp[ref_col], grp[fast_col]),
+                "after": wape_error(grp[ref_col], grp[corr_col]),
             }
         )
     return pd.DataFrame(rows).dropna()
@@ -346,14 +339,14 @@ def plot_sensitivity(df_in: pd.DataFrame, model_qb):
     color_before = "#e74c3c"
     color_after = "#2ecc71"
 
-    grouped = compute_mape_group(df, "S", "qb_fast", "qb_corrected", "qb_ref")
+    grouped = compute_wape_group(df, "S", "qb_fast", "qb_corrected", "qb_ref")
     if not grouped.empty:
         fig, ax = plt.subplots(figsize=(7, 5))
         ax.plot(grouped["S"], grouped["before"], "o--", color=color_before, lw=2, ms=7, label="Fast (raw)")
         ax.plot(grouped["S"], grouped["after"], "o-", color=color_after, lw=2, ms=7, label="After correction")
         ax.set_xlabel("Mass scaling factor S")
-        ax.set_ylabel("MAPE (%) - Base resistance qb")
-        ax.set_title("MAPE vs mass scaling factor S  (Reference: S=1)", fontweight="bold")
+        ax.set_ylabel("WAPE (%) - Base resistance qb")
+        ax.set_title("WAPE vs mass scaling factor S  (Reference: S=1)", fontweight="bold")
         ax.set_xticks(grouped["S"].tolist())
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=9)
@@ -363,14 +356,14 @@ def plot_sensitivity(df_in: pd.DataFrame, model_qb):
         plt.close(fig)
         print(f"  Saved -> {out}")
 
-    grouped = compute_mape_group(df, "ID", "qb_fast", "qb_corrected", "qb_ref")
+    grouped = compute_wape_group(df, "ID", "qb_fast", "qb_corrected", "qb_ref")
     if not grouped.empty:
         fig, ax = plt.subplots(figsize=(7, 5))
         ax.plot(grouped["ID"], grouped["before"], "s--", color=color_before, lw=2, ms=7, label="Fast (raw)")
         ax.plot(grouped["ID"], grouped["after"], "s-", color=color_after, lw=2, ms=7, label="After correction")
         ax.set_xlabel("Relative density ID")
-        ax.set_ylabel("MAPE (%) - Base resistance qb")
-        ax.set_title("MAPE vs relative density ID  (Reference: S=1)", fontweight="bold")
+        ax.set_ylabel("WAPE (%) - Base resistance qb")
+        ax.set_title("WAPE vs relative density ID  (Reference: S=1)", fontweight="bold")
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=9)
         fig.tight_layout()
@@ -379,45 +372,23 @@ def plot_sensitivity(df_in: pd.DataFrame, model_qb):
         plt.close(fig)
         print(f"  Saved -> {out}")
 
-    zones = [
-        (f"Shallow (0-{SHALLOW_CUTOFF:g}m)", df["depth"] <= SHALLOW_CUTOFF),
-        (f"Deep (>{SHALLOW_CUTOFF:g}m)", df["depth"] > SHALLOW_CUTOFF),
-    ]
-    before = [percentage_error(df.loc[mask, "qb_ref"], df.loc[mask, "qb_fast"]) for _, mask in zones]
-    after = [percentage_error(df.loc[mask, "qb_ref"], df.loc[mask, "qb_corrected"]) for _, mask in zones]
-    fig, ax = plt.subplots(figsize=(7, 5))
-    x = np.arange(len(zones))
-    ax.bar(x - 0.18, before, 0.35, color=color_before, label="Fast (raw)", alpha=0.85)
-    ax.bar(x + 0.18, after, 0.35, color=color_after, label="After correction", alpha=0.85)
-    ax.set_xticks(x)
-    ax.set_xticklabels([name for name, _ in zones])
-    ax.set_ylabel("MAPE (%)")
-    ax.set_title("Shallow vs Deep - Base resistance qb", fontweight="bold")
-    ax.grid(True, alpha=0.3, axis="y")
-    ax.legend(fontsize=9)
-    fig.tight_layout()
-    out = PLOTS_DIR / "sensitivity_shallow_vs_deep.png"
-    fig.savefig(out, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved -> {out}")
-
     s_values = sorted(df["S"].dropna().unique())
     id_values = sorted(df["ID"].dropna().unique())
     if s_values and id_values:
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-        fig.suptitle("Heatmap: S x ID MAPE  (Reference: S=1)", fontsize=12, fontweight="bold")
+        fig.suptitle("Heatmap: S x ID WAPE  (Reference: S=1)", fontsize=12, fontweight="bold")
         for ax, (col_use, title, cmap) in zip(
             axes,
             [
-                ("qb_fast", "Fast error MAPE% (before)", "Reds"),
-                ("qb_corrected", "Corrected error MAPE% (after)", "Greens"),
+                ("qb_fast", "Fast error WAPE% (before)", "Reds"),
+                ("qb_corrected", "Corrected error WAPE% (after)", "Greens"),
             ],
         ):
             mat = np.full((len(id_values), len(s_values)), np.nan)
             for i, id_value in enumerate(id_values):
                 for j, s_value in enumerate(s_values):
                     sub = df[(df["ID"] == id_value) & (df["S"] == s_value)]
-                    mat[i, j] = percentage_error(sub["qb_ref"], sub[col_use]) if not sub.empty else np.nan
+                    mat[i, j] = wape_error(sub["qb_ref"], sub[col_use]) if not sub.empty else np.nan
             vmax = finite_vmax(mat)
             im = ax.imshow(mat, cmap=cmap, aspect="auto", vmin=0, vmax=vmax)
             ax.set_xticks(range(len(s_values)))
@@ -427,7 +398,7 @@ def plot_sensitivity(df_in: pd.DataFrame, model_qb):
             ax.set_xlabel("S")
             ax.set_ylabel("Density ID")
             ax.set_title(title)
-            fig.colorbar(im, ax=ax, label="MAPE (%)")
+            fig.colorbar(im, ax=ax, label="WAPE (%)")
             for i in range(len(id_values)):
                 for j in range(len(s_values)):
                     if np.isfinite(mat[i, j]):
@@ -446,19 +417,19 @@ def plot_sensitivity(df_in: pd.DataFrame, model_qb):
         df_bins = df.copy()
         df_bins["depth_bin"] = pd.cut(df_bins["depth"], bins=bins, labels=labels, include_lowest=True)
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        fig.suptitle("Heatmap: S x depth MAPE  (Reference: S=1)", fontsize=12, fontweight="bold")
+        fig.suptitle("Heatmap: S x depth WAPE  (Reference: S=1)", fontsize=12, fontweight="bold")
         for ax, (col_use, title, cmap) in zip(
             axes,
             [
-                ("qb_fast", "Fast error MAPE% by S and depth", "Reds"),
-                ("qb_corrected", "Corrected error MAPE% by S and depth", "Greens"),
+                ("qb_fast", "Fast error WAPE% by S and depth", "Reds"),
+                ("qb_corrected", "Corrected error WAPE% by S and depth", "Greens"),
             ],
         ):
             mat = np.full((len(s_values), len(labels)), np.nan)
             for i, s_value in enumerate(s_values):
                 for j, label in enumerate(labels):
                     sub = df_bins[(df_bins["S"] == s_value) & (df_bins["depth_bin"] == label)]
-                    mat[i, j] = percentage_error(sub["qb_ref"], sub[col_use]) if not sub.empty else np.nan
+                    mat[i, j] = wape_error(sub["qb_ref"], sub[col_use]) if not sub.empty else np.nan
             vmax = finite_vmax(mat)
             im = ax.imshow(mat, cmap=cmap, aspect="auto", vmin=0, vmax=vmax)
             ax.set_xticks(range(len(labels)))
@@ -468,7 +439,7 @@ def plot_sensitivity(df_in: pd.DataFrame, model_qb):
             ax.set_xlabel("Depth bin")
             ax.set_ylabel("S")
             ax.set_title(title)
-            fig.colorbar(im, ax=ax, label="MAPE (%)")
+            fig.colorbar(im, ax=ax, label="WAPE (%)")
             for i in range(len(s_values)):
                 for j in range(len(labels)):
                     if np.isfinite(mat[i, j]):
@@ -486,12 +457,12 @@ def plot_publication_correction_curve(df_in: pd.DataFrame, model_qb):
     for s_value in sorted(df["S"].dropna().unique()):
         df_s = df[df["S"] == s_value]
         best_id = None
-        best_mape = np.inf
+        best_wape = np.inf
         for scenario_id, grp in df_s.groupby("scenario_id"):
-            mape = percentage_error(grp["qb_ref"], grp["qb_corrected"])
-            if np.isfinite(mape) and mape < best_mape:
+            wape = wape_error(grp["qb_ref"], grp["qb_corrected"])
+            if np.isfinite(wape) and wape < best_wape:
                 best_id = scenario_id
-                best_mape = mape
+                best_wape = wape
         if best_id is None:
             continue
 
@@ -502,7 +473,7 @@ def plot_publication_correction_curve(df_in: pd.DataFrame, model_qb):
         fig, ax = plt.subplots(figsize=(8, 8))
         fig.suptitle(
             f"ML Correction Result - S={plot_number(s_value)}, ID={plot_number(id_value)}, v={velocity:g} cm/s\n"
-            f"Reference: S=1  |  MAPE after correction = {best_mape:.1f}%",
+            f"Reference: S=1  |  WAPE after correction = {best_wape:.1f}%",
             fontsize=11,
             fontweight="bold",
         )
@@ -535,12 +506,11 @@ def plot_error_reduction_summary(df_in: pd.DataFrame, model_qb):
         return
 
     metric_specs = [
-        ("RMSE [MPa]", lambda ref, pred: float(np.sqrt(np.mean((pred - ref) ** 2)))),
-        ("MAE [MPa]", lambda ref, pred: float(np.mean(np.abs(pred - ref)))),
-        ("MAPE (%)", percentage_error),
+        ("WAPE (%)", wape_error),
+        ("RMSE [MPa]", rmse_error),
     ]
 
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
     fig.suptitle("Error Reduction Summary - Base resistance qb  (Reference: S=1)", fontsize=13, fontweight="bold")
     for ax, (metric_name, metric_fn) in zip(axes, metric_specs):
         before = []
@@ -626,7 +596,7 @@ def plot_predicted_vs_actual(df_in: pd.DataFrame, model_qb):
         ax.axhline(0, color="gray", lw=0.8, alpha=0.5)
         ax.axvline(0, color="gray", lw=0.8, alpha=0.5)
         ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=8)
+        ax.legend(fontsize=8, loc="lower right")
     fig.tight_layout()
     out = PLOTS_DIR / "pub_C_predicted_vs_actual.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
@@ -675,8 +645,7 @@ def plot_depth_error_profile(df_in: pd.DataFrame, model_qb):
         ax.plot(corr_mean, depths_arr, color="#2ecc71", lw=2.0, label="Corrected error (mean)")
         ax.fill_betweenx(depths_arr, corr_mean - corr_std, corr_mean + corr_std, color="#2ecc71", alpha=0.15)
         ax.axvline(0, color="black", lw=1.2)
-        ax.axhline(SHALLOW_CUTOFF, color="gray", lw=1, ls="--", alpha=0.6, label=f"Shallow cutoff {SHALLOW_CUTOFF:g}m")
-        ax.invert_yaxis()
+        ax.set_ylim(float(df["depth"].max()), 0.0)
         ax.set_xlabel("Error [MPa]")
         ax.set_title(f"S={plot_number(s_value)} - Base resistance qb")
         ax.grid(True, alpha=0.3)
@@ -694,8 +663,8 @@ def plot_improvement_percentage(df_in: pd.DataFrame, model_qb):
     df = corrected_frame(df_in, model_qb)
     rows = []
     for (scenario_id, s_value), grp in df.groupby(["scenario_id", "S"]):
-        before = percentage_error(grp["qb_ref"], grp["qb_fast"])
-        after = percentage_error(grp["qb_ref"], grp["qb_corrected"])
+        before = wape_error(grp["qb_ref"], grp["qb_fast"])
+        after = wape_error(grp["qb_ref"], grp["qb_corrected"])
         if np.isnan(before) or np.isnan(after):
             continue
         rows.append(
@@ -721,7 +690,7 @@ def plot_improvement_percentage(df_in: pd.DataFrame, model_qb):
     ax.set_yticks(np.arange(len(df_imp)))
     ax.set_yticklabels(labels, fontsize=7)
     ax.axvline(0, color="black", lw=1.1)
-    ax.set_xlabel("MAPE improvement (percentage points)")
+    ax.set_xlabel("WAPE improvement (percentage points)")
     ax.set_title(
         "Error Improvement per Scenario - Base resistance qb  (Reference: S=1)\n"
         "Positive = correction helped, Negative = correction hurt",
@@ -791,18 +760,10 @@ def plot_correlation_matrix(df: pd.DataFrame, model_qb):
 
 
 def save_metrics(df_test: pd.DataFrame):
-    metrics = []
-    zones = [
-        ("ALL depths", pd.Series(True, index=df_test.index)),
-        (f"Shallow (0-{SHALLOW_CUTOFF:g}m)", df_test["depth"] <= SHALLOW_CUTOFF),
-        (f"Deep (>{SHALLOW_CUTOFF:g}m)", df_test["depth"] > SHALLOW_CUTOFF),
+    metrics = [
+        compute_metrics(df_test["qb_ref"], df_test["qb_fast"], "qb fast vs ref"),
+        compute_metrics(df_test["qb_ref"], df_test["qb_corrected"], "qb corrected vs ref"),
     ]
-    for zone_label, mask in zones:
-        sub = df_test[mask]
-        if sub.empty:
-            continue
-        metrics.append(compute_metrics(sub["qb_ref"], sub["qb_fast"], f"qb fast vs ref [{zone_label}]"))
-        metrics.append(compute_metrics(sub["qb_ref"], sub["qb_corrected"], f"qb corrected vs ref [{zone_label}]"))
 
     df_metrics = pd.DataFrame(metrics)
     df_metrics.to_csv(RESULTS_DIR / "metrics.csv", index=False)
@@ -868,7 +829,8 @@ def train_soil_model(run):
             splitter = GroupShuffleSplit(n_splits=1, test_size=0.20, random_state=42)
             tr_idx, te_idx = next(splitter.split(df_s, groups=df_s["scenario_id"]))
             df_tr = df_s.iloc[tr_idx]
-            df_te = df_s.iloc[te_idx].copy()
+            test_scenario_ids = df_s.iloc[te_idx]["scenario_id"].unique()
+            df_te = df[(df["S"] == s_value) & (df["scenario_id"].isin(test_scenario_ids))].copy()
             train_parts.append(df_tr)
             test_parts.append(df_te)
             models_qb[s_value] = train_final(df_tr, "res_qb", f"qb_S{s_value}")
@@ -899,11 +861,12 @@ def train_soil_model(run):
         splitter = GroupShuffleSplit(n_splits=1, test_size=0.20, random_state=42)
         tr_idx, te_idx = next(splitter.split(df_train_pool, groups=df_train_pool["scenario_id"]))
         df_train = df_train_pool.iloc[tr_idx]
-        df_test = df_train_pool.iloc[te_idx].copy()
+        test_scenario_ids = df_train_pool.iloc[te_idx]["scenario_id"].unique()
+        df_test = df[df["scenario_id"].isin(test_scenario_ids)].copy()
 
         print(
             f"Train: {df_train['scenario_id'].nunique()} scenarios; "
-            f"Test: {df_test['scenario_id'].nunique()} scenarios"
+            f"Test: {df_test['scenario_id'].nunique()} scenarios, complete curve"
         )
         compute_and_save_normalisation(df_train, meta_path)
         model_qb = train_final(df_train, "res_qb", "qb")
@@ -922,9 +885,12 @@ def train_soil_model(run):
         df_plot = df.copy()
         print("\nPlot dataset not found; using training dataset for plots")
 
-    obsolete_plot = PLOTS_DIR / "pub_A_representative_correction.png"
-    if obsolete_plot.exists():
-        obsolete_plot.unlink()
+    for obsolete_plot in [
+        PLOTS_DIR / "pub_A_representative_correction.png",
+        PLOTS_DIR / "sensitivity_shallow_vs_deep.png",
+    ]:
+        if obsolete_plot.exists():
+            obsolete_plot.unlink()
 
     print("\nGenerating plots...")
     plot_correction_curves(df_plot, model_qb)

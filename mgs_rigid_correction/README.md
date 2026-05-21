@@ -166,12 +166,15 @@ python scripts\08_train_correction_model.py
 ```
 
 `06_plot_pre_ml_raw_curves.py` is a pre-ML inspection step. It reads extracted
-CSV files directly from `data/extracted/per_run_csv/`, applies only a 30-point
-moving average, and writes raw curve PNGs under:
+CSV files directly from `data/extracted/per_run_csv/`, applies only a moving
+average, and writes raw curve PNGs under:
 
 ```text
-plots/raw_30pt_average/
+plots/raw_averaged_plots/{mcm,hypoplastic}/
 ```
+
+The moving-average and `q_s` axis limits are set near the top of the script.
+The current defaults are 20 points for MCM and 30 points for hypoplastic.
 
 `07_build_ml_dataset.py` validates the extracted CSV files against the metadata
 matrix. For the current Phase 0 matrix it expects 60 extracted CSVs per soil
@@ -209,6 +212,33 @@ plots/ml/hypoplastic/
 ```
 
 These generated folders are ignored by Git.
+
+The ML model is trained only for base resistance `q_b`. It predicts the
+residual correction:
+
+```text
+res_qb = qb_ref - qb_fast
+qb_corrected = qb_fast + predicted_res_qb
+```
+
+Only high-S quantities are used as ML input features. The S=1 response is used
+only as the reference target. Rows flagged as shallow by the dataset builder
+(`depth < 1 m`) are excluded from training, but final metrics are evaluated on
+the complete held-out curves. The final reported metrics are:
+
+```text
+WAPE(%) = 100 * sum(abs(qb_ref - qb_pred)) / sum(abs(qb_ref))
+RMSE    = sqrt(mean((qb_pred - qb_ref)^2))
+```
+
+The generated plot set includes correction curves, WAPE sensitivity plots,
+WAPE heatmaps, error-reduction summaries, predicted-vs-actual residual plots,
+depth error profiles, scenario-improvement bars, and a feature/target
+correlation matrix. More detail is documented in:
+
+```text
+docs/current_ml_pipeline.md
+```
 
 ## Run Naming
 

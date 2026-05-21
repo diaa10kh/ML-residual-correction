@@ -33,7 +33,7 @@ RAW_DIR = PROJECT_ROOT / "data" / "extracted" / "per_run_csv"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "plots" / "raw_averaged_plots"
 
 # Adjustable plotting parameters.
-MCM_MOVING_AVERAGE_WINDOW = 20
+MCM_MOVING_AVERAGE_WINDOW = 30
 HYPOPLASTIC_MOVING_AVERAGE_WINDOW = 30
 MCM_QS_XLIM_KPA = (0.0, 200.0)
 HYPOPLASTIC_QS_XLIM_KPA = (0.0, 30.0)
