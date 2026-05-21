@@ -21,6 +21,7 @@ MATRIX_CSV="${MGS_MATRIX_CSV:-data/extracted/run_metadata_phase0.csv}"
 SLURM_SCRIPT_LOCAL="${MGS_SLURM_SCRIPT:-scripts/03_submit_slurm_array.sh}"
 USERRTN_LOCAL="${MGS_USERRTN:-abaqus/vumat-hypo-2020-hst.for}"
 CLEAR_REMOTE_INPUTS="${MGS_CLEAR_REMOTE_INPUTS:-1}"
+ARRAY_THROTTLE="${MGS_ARRAY_THROTTLE:-}"
 
 MODE="${1:-submit_all}"
 START_INDEX="${2:-0}"
@@ -121,8 +122,13 @@ submit_all() {
     exit 0
   fi
 
-  echo "Submitting ${copied} jobs with array 1-${copied}%40"
-  ssh_remote "cd \"${ROOT_REMOTE}\"; sbatch --array=1-${copied}%40 03_submit_slurm_array.sh"
+  local array_spec="1-${copied}"
+  if [[ -n "${ARRAY_THROTTLE}" ]]; then
+    array_spec="${array_spec}%${ARRAY_THROTTLE}"
+  fi
+
+  echo "Submitting ${copied} jobs with array ${array_spec}"
+  ssh_remote "cd \"${ROOT_REMOTE}\"; sbatch --array=${array_spec} 03_submit_slurm_array.sh"
 }
 
 fetch_results() {

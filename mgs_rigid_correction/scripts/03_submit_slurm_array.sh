@@ -9,11 +9,12 @@
 #SBATCH --time=50:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=5000
-#SBATCH --array=1-999%40
+#SBATCH --array=1-999
 #SBATCH --output=logs/slurm_%A_%a.out
 #SBATCH --error=logs/slurm_%A_%a.err
 
 set -e
+set -o pipefail
 
 #################################
 # -  Settings                   - #
@@ -67,13 +68,13 @@ fi
 cd "${fullpath}"
 if [[ "${needs_userroutine}" -eq 1 && -f "${userroutine}" ]]; then
   echo "Input contains *User Material; running with user routine ${userroutine}."
-  abaqus job="${jobname}" input="${jobname}.inp" user="${userroutine}" cpus="${cpus}" interactive double | tee "${jobname}_output.out"
+  abaqus job="${jobname}" input="${jobname}.inp" user="${userroutine}" cpus="${cpus}" interactive double=both | tee "${jobname}_output.out"
 elif [[ "${needs_userroutine}" -eq 1 ]]; then
   echo "ERROR: input contains *User Material but ${userroutine} was not found in ${input_dir}."
   exit 2
 else
   echo "Input does not contain *User Material; running without user routine."
-  abaqus job="${jobname}" input="${jobname}.inp" cpus="${cpus}" interactive double | tee "${jobname}_output.out"
+  abaqus job="${jobname}" input="${jobname}.inp" cpus="${cpus}" interactive double=both | tee "${jobname}_output.out"
 fi
 
 for ext in odb sta msg dat log; do

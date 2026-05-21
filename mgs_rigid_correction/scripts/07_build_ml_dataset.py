@@ -1,430 +1,437 @@
 """
-07_build_ml_dataset.py
--------------------
-Reads all real Abaqus CSV files from the data folder.
-Pairs mass-scaled runs with the reference (S=1)
-using scenario_id as the matching key.
+Build ML residual datasets from extracted Abaqus CSV files.
 
+This is the repository-adapted version of the student dataset pipeline.  It
+keeps the repo input layout, but writes separate outputs for MCM and
+hypoplastic runs:
 
-Output: data/processed/ml/{mohr_coulomb,hypoplastic}/real_dataset.csv
+  Input:  data/extracted/per_run_csv/{run_id}.csv
+  Output: data/processed/ml/{mcm,hypoplastic}/real_dataset.csv
+          data/processed/ml/{mcm,hypoplastic}/real_dataset_plot.csv
+          data/processed/ml/{mcm,hypoplastic}/dataset_meta.json
 
-HOW TO USE:
-  1. Put extracted per-run CSV files in data/extracted/per_run_csv/
-  2. Run: python scripts/07_build_ml_dataset.py
-
-FILE NAMING CONVENTION EXPECTED:
-  MC_G0_DENS_{DENS_LEVEL}_V_{V_LEVEL}_S{SSS}.csv
-  Example: MC_G0_DENS_HIGH_V_HIGH_S001.csv
-
-PARAMETER ENCODING IN FILENAME:
-  DENS_HIGH  → density_level = HIGH
-  DENS_MED   → density_level = MED
-  DENS_LOW   → density_level = LOW  (if exists)
-  V_HIGH     → velocity_level = HIGH
-  V_MED      → velocity_level = MED  (if exists)
-  V_REF      → velocity_level = REF  (reference velocity)
-  S001       → S = 1   (reference — ground truth)
-  S010       → S = 10
-  S030       → S = 30
-  S050       → S = 50
-  S100       → S = 100
+The current Phase 0 grids are expected to contain 60 extracted CSVs per soil
+model: 4 densities x 3 velocities x 5 scaling factors.
 """
 
-import pandas as pd
-import numpy as np
+from __future__ import annotations
+
 import argparse
 import csv
+import json
 import os
-import glob
 import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-# ─── Config ──────────────────────────────────────────────────────────────────
 
-_HERE   = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+DATA_ROOT = PROJECT_ROOT / "data"
+RAW_DIR = DATA_ROOT / "extracted" / "per_run_csv"
+OUT_ROOT = DATA_ROOT / "processed" / "ml"
 
-# Script should be in same folder as Data/
-# Structure: first-Dataset/01_build_dataset.py + first-Dataset/Data/
-def _find_root():
-    for name in ["data", "Data", "DATA"]:
-        if os.path.isdir(os.path.join(_HERE, name)):
-            return _HERE, name
-    for name in ["data", "Data", "DATA"]:
-        candidate = os.path.join(_HERE, "..", name)
-        if os.path.isdir(candidate):
-            return os.path.normpath(os.path.join(_HERE, "..")), name
-    return _HERE, "data"
+S_REF = 1
+EXPECTED_CSV_COUNT = 60
 
-_ROOT, _data_name = _find_root()
-_DATA_FOLDER = os.path.join(_ROOT, _data_name)
+DENS_MAP = {"LOW": 0.30, "MED": 0.60, "REF": 0.80, "HIGH": 0.90}
+VPEN_MAP = {"LOW": 25.0, "REF": 50.0, "HIGH": 100.0}
 
-RAW_DIR = os.path.join(_DATA_FOLDER, "extracted", "per_run_csv")
-OUT_ROOT = os.path.join(_DATA_FOLDER, "processed", "ml")
-OUT_PATH = os.path.join(OUT_ROOT, "combined", "real_dataset.csv")
-S_REF    = 1
+SMOOTH_WINDOW_QB = 30
+SMOOTH_WINDOW_QS = 15
+MIN_TRAINING_DEPTH = 1.0
+OUTLIER_STD_THRESH = 3.0
+GRADIENT_WINDOW = 5
 
 SOIL_MODEL_RUNS = [
     {
-        "name": "mohr_coulomb",
-        "label": "Mohr-Coulomb",
+        "name": "mcm",
+        "label": "MCM",
         "patterns": ["MC_*.csv"],
-        "metadata_path": os.path.join(_DATA_FOLDER, "extracted", "run_metadata_phase0_mohr_coulomb.csv"),
-        "out_path": os.path.join(OUT_ROOT, "mohr_coulomb", "real_dataset.csv"),
+        "metadata_path": DATA_ROOT / "extracted" / "run_metadata_phase0_mohr_coulomb.csv",
+        "out_dir": OUT_ROOT / "mcm",
     },
     {
         "name": "hypoplastic",
         "label": "Hypoplastic",
         "patterns": ["G0_*.csv"],
-        "metadata_path": os.path.join(_DATA_FOLDER, "extracted", "run_metadata_phase0.csv"),
-        "out_path": os.path.join(OUT_ROOT, "hypoplastic", "real_dataset.csv"),
+        "metadata_path": DATA_ROOT / "extracted" / "run_metadata_phase0.csv",
+        "out_dir": OUT_ROOT / "hypoplastic",
     },
 ]
 
 
-# ── To run second batch (G0_ files) separately ───────────────────────────────
-# RAW_DIR  = os.path.join(_DATA_FOLDER, "raw_g0")
-# OUT_PATH = os.path.join(_DATA_FOLDER, "real_dataset_g0.csv")
-# ─────────────────────────────────────────────────────────────────────────────
-
-DEPTH_GRID = np.arange(0.1, 9.05, 0.1)
-
-DENS_MAP = {"LOW": 0.30, "MED": 0.60, "REF": 0.80, "HIGH": 0.90}
-VPEN_MAP = {"LOW": 25.0, "REF": 50.0, "HIGH": 100.0}
-
-# qb changes slowly with depth → larger window justified
-# qs changes faster → keep smaller window
-SMOOTH_WINDOW_QB = 30    # 30-point moving average
-SMOOTH_WINDOW_QS = 30    # same window for both
-
-# Shallow depth has extreme outliers and near-zero signal
-# Model still predicts corrections for shallow at inference time
-MIN_TRAINING_DEPTH = 1.0   # metres — rows below this depth excluded from training
+def normalise_soil_model(value: str) -> str:
+    if value == "mohr_coulomb":
+        return "mcm"
+    return value
 
 
-# Remove rows where residual is beyond N standard deviations
-# Removes interpolation artifacts and contact algorithm spikes
-OUTLIER_STD_THRESHOLD = 3.0   # standard deviations
+def smooth_curve(series, window: int):
+    return (
+        pd.Series(series)
+        .rolling(window=window, center=True, min_periods=1)
+        .mean()
+        .values
+    )
 
-# ─── File parser ─────────────────────────────────────────────────────────────
 
-def parse_filename(fname):
-    """
-    Extract parameters from filename.
-    MC_G0_DENS_HIGH_V_HIGH_S001.csv
-    Returns dict with: dens_level, v_level, S, scenario_id
-    """
-    base = os.path.basename(fname).replace(".csv", "")
+def compute_depth_gradient(values, depths, window: int = GRADIENT_WINDOW):
+    vals = np.asarray(values, dtype=float)
+    dpts = np.asarray(depths, dtype=float)
+    grad = np.full_like(vals, np.nan)
+
+    for i in range(1, len(vals) - 1):
+        dz = dpts[i + 1] - dpts[i - 1]
+        if dz > 0:
+            grad[i] = (vals[i + 1] - vals[i - 1]) / dz
+
+    if len(vals) > 1:
+        dz0 = dpts[1] - dpts[0]
+        grad[0] = (vals[1] - vals[0]) / dz0 if dz0 > 0 else 0.0
+        dz_last = dpts[-1] - dpts[-2]
+        grad[-1] = (vals[-1] - vals[-2]) / dz_last if dz_last > 0 else 0.0
+
+    return (
+        pd.Series(grad)
+        .rolling(window=window, center=True, min_periods=1)
+        .mean()
+        .bfill()
+        .ffill()
+        .fillna(0.0)
+        .values
+    )
+
+
+def parse_filename(path: Path):
+    base = path.stem
     parts = base.split("_")
+    try:
+        dens_idx = parts.index("DENS")
+        dens_level = parts[dens_idx + 1]
+        v_idx = parts.index("V")
+        v_level = parts[v_idx + 1]
+        s_part = [part for part in parts if part.startswith("S") and part[1:].isdigit()]
+        s_value = int(s_part[0][1:]) if s_part else None
+        scenario_id = "_".join(parts[:-1])
+        density = DENS_MAP.get(dens_level)
+        velocity = VPEN_MAP.get(v_level)
+    except (ValueError, IndexError):
+        print(f"  WARNING: could not parse {path.name}; skipping")
+        return None
 
-    # Find DENS level
-    dens_idx = parts.index("DENS")
-    dens_level = parts[dens_idx + 1]
-
-    # Find V level
-    v_idx = parts.index("V")
-    v_level = parts[v_idx + 1]
-
-    # Find S value (last part starts with S)
-    s_part = [p for p in parts if p.startswith("S") and p[1:].isdigit()]
-    S = int(s_part[0][1:]) if s_part else None
-
-    # scenario_id = everything before the S part
-    scenario_id = "_".join(parts[:-1])
+    if density is None:
+        print(f"  WARNING: unknown density level {dens_level!r} in {path.name}; skipping")
+        return None
+    if velocity is None:
+        print(f"  WARNING: unknown velocity level {v_level!r} in {path.name}; skipping")
+        return None
+    if s_value is None:
+        print(f"  WARNING: missing scaling factor in {path.name}; skipping")
+        return None
 
     return {
+        "run_id": base,
         "dens_level": dens_level,
-        "v_level":    v_level,
-        "S":          S,
+        "v_level": v_level,
+        "S": s_value,
         "scenario_id": scenario_id,
-        "ID":         DENS_MAP.get(dens_level, 0.80),
-        "v_pen":      VPEN_MAP.get(v_level, 2.0),
+        "ID": density,
+        "v_pen": velocity,
     }
 
 
-# ─── Smoothing ───────────────────────────────────────────────────────────────
+def match_on_depth(df: pd.DataFrame, depth_col: str = "z_m", val_col: str = "qb_MPa"):
+    missing = [col for col in [depth_col, val_col] if col not in df.columns]
+    if missing:
+        raise ValueError(f"CSV is missing required column(s): {', '.join(missing)}")
 
-def smooth_curve(series, window):
-    """
-    Apply centered moving average to smooth noisy simulation output.
-    Applied only to S=1 reference curves.
-    Uses separate windows for qb and qs based on their noise characteristics.
-    """
-    return pd.Series(series).rolling(
-        window=window, center=True, min_periods=1
-    ).mean().values
+    df_sorted = (
+        df[[depth_col, val_col]]
+        .replace([np.inf, -np.inf], np.nan)
+        .dropna()
+        .sort_values(depth_col)
+        .drop_duplicates(depth_col)
+        .rename(columns={depth_col: "depth", val_col: "qb_MPa"})
+        .reset_index(drop=True)
+    )
 
-
-# ─── Interpolation ───────────────────────────────────────────────────────────
-
-def interpolate_to_grid(df, depth_col="z_m", val_cols=["qb_MPa", "qs_kPa"],
-                        grid=DEPTH_GRID):
-    """
-    Interpolate simulation output onto a common depth grid.
-    This is necessary because different S values produce output
-    at slightly different depth points due to different time steps.
-    """
-    df_sorted = df.sort_values(depth_col).drop_duplicates(depth_col)
-    result = {"depth": grid}
-    for col in val_cols:
-        result[col] = np.interp(
-            grid,
-            df_sorted[depth_col].values,
-            df_sorted[col].values,
-            left=0.0,
-            right=np.nan
-        )
-    return pd.DataFrame(result)
+    # Zero rows are pre-contact time steps, not physical resistance values.
+    df_sorted = df_sorted[df_sorted["qb_MPa"] > 0].reset_index(drop=True)
+    return df_sorted
 
 
-# ─── Main pipeline ───────────────────────────────────────────────────────────
-
-def expected_csvs_from_metadata(metadata_path):
-    if not metadata_path or not os.path.exists(metadata_path):
+def expected_csvs_from_metadata(metadata_path: Path):
+    if not metadata_path.exists():
         return []
+
     expected = []
-    with open(metadata_path, "r", newline="") as handle:
+    with metadata_path.open("r", newline="", encoding="utf-8-sig") as handle:
         for row in csv.DictReader(handle):
             run_id = row.get("run_id", "")
             if run_id:
-                expected.append(os.path.join(RAW_DIR, run_id + ".csv"))
+                expected.append(RAW_DIR / f"{run_id}.csv")
     return expected
 
 
-def validate_expected_csvs(label, metadata_path, allow_partial):
-    expected = expected_csvs_from_metadata(metadata_path)
-    if not expected:
-        print(f"WARNING: No metadata validation available for {label}: {metadata_path}")
-        return
+def validate_expected_csvs(run, allow_partial: bool):
+    expected = expected_csvs_from_metadata(run["metadata_path"])
+    label = run["label"]
 
-    missing = [path for path in expected if not os.path.exists(path)]
+    if not expected:
+        message = f"{label}: no metadata validation file found at {run['metadata_path']}"
+        if allow_partial:
+            print("WARNING: " + message)
+            return
+        raise SystemExit("ERROR: " + message)
+
+    if len(expected) != EXPECTED_CSV_COUNT:
+        message = (
+            f"{label}: metadata lists {len(expected)} runs; expected "
+            f"{EXPECTED_CSV_COUNT} for 4 x 3 x 5."
+        )
+        if allow_partial:
+            print("WARNING: " + message)
+        else:
+            raise SystemExit("ERROR: " + message)
+
+    missing = [path for path in expected if not path.exists()]
     if not missing:
         print(f"Metadata validation for {label}: all {len(expected)} expected CSV files found")
         return
 
     message = (
         f"{label}: missing {len(missing)} of {len(expected)} expected extracted CSV files. "
-        "Run/postprocess the full matrix first, or rerun with --allow-partial for an exploratory build."
+        "Run/postprocess the full matrix first, or rerun with --allow-partial."
     )
-    if allow_partial:
-        print("WARNING: " + message)
-        for path in missing[:10]:
-            print(f"  missing: {os.path.basename(path)}")
-        if len(missing) > 10:
-            print(f"  ... {len(missing) - 10} more missing file(s)")
-        return
-    raise SystemExit("ERROR: " + message)
+    if not allow_partial:
+        raise SystemExit("ERROR: " + message)
+
+    print("WARNING: " + message)
+    for path in missing[:10]:
+        print(f"  missing: {path.name}")
+    if len(missing) > 10:
+        print(f"  ... {len(missing) - 10} more missing file(s)")
 
 
-def build_dataset(label="Combined", patterns=None, out_path=OUT_PATH, metadata_path=None, allow_partial=False):
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    validate_expected_csvs(label, metadata_path, allow_partial)
-
-    # Find all CSV files — handles both MC_G0_ and G0_ naming conventions
-    if patterns is None:
-        patterns = ["MC_*.csv", "G0_*.csv"]
-    all_files = []
+def discover_files(patterns):
+    files = []
     for pattern in patterns:
-        all_files.extend(glob.glob(os.path.join(RAW_DIR, pattern)))
-    all_files = sorted(all_files)
+        files.extend(RAW_DIR.glob(pattern))
+    return sorted(set(files))
+
+
+def build_dataset(run, allow_partial: bool = False):
+    label = run["label"]
+    out_dir = run["out_dir"]
+    out_path = out_dir / "real_dataset.csv"
+    plot_path = out_dir / "real_dataset_plot.csv"
+    meta_path = out_dir / "dataset_meta.json"
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    validate_expected_csvs(run, allow_partial)
+
+    all_files = discover_files(run["patterns"])
     if not all_files:
-        print(f"ERROR: No CSV files found in {RAW_DIR}")
-        print(f"Patterns: {patterns}")
+        print(f"ERROR: no CSV files found in {RAW_DIR}")
+        print(f"Patterns: {run['patterns']}")
         return None
 
-    print(f"\n{'='*50}")
+    print("")
+    print("=" * 60)
     print(f"Building dataset for {label}")
-    print(f"Output folder: {os.path.dirname(out_path)}")
+    print(f"RAW:    {RAW_DIR}")
+    print(f"OUTPUT: {out_dir}")
     print(f"Found {len(all_files)} CSV files")
 
-    # Parse all files and group by scenario_id
     file_info = []
-    for fpath in all_files:
-        info = parse_filename(fpath)
-        info["path"] = fpath
+    for path in all_files:
+        info = parse_filename(path)
+        if info is None:
+            continue
+        info["path"] = path
         file_info.append(info)
-        print(f"  {os.path.basename(fpath)} → "
-              f"DENS={info['dens_level']} ({info['ID']}), "
-              f"V={info['v_level']} ({info['v_pen']}), "
-              f"S={info['S']}")
+        print(
+            f"  {path.name} -> DENS={info['dens_level']} ({info['ID']}), "
+            f"V={info['v_level']} ({info['v_pen']}), S={info['S']}"
+        )
+
+    if not file_info:
+        print(f"ERROR: no parseable CSV files found for {label}")
+        return None
 
     df_info = pd.DataFrame(file_info)
-
-    # Group by scenario_id (same setup, different S)
     scenarios = df_info.groupby("scenario_id")
     print(f"\nFound {len(scenarios)} unique scenarios")
 
     records = []
     for scenario_id, grp in scenarios:
-        # Find reference file (S=S_REF)
         ref_row = grp[grp["S"] == S_REF]
         if len(ref_row) == 0:
-            print(f"  WARNING: No S={S_REF} reference for {scenario_id} — skipping")
+            print(f"  WARNING: no S={S_REF} reference for {scenario_id}; skipping")
             continue
 
         ref_path = ref_row.iloc[0]["path"]
-        ID       = ref_row.iloc[0]["ID"]
-        v_pen    = ref_row.iloc[0]["v_pen"]
+        density = ref_row.iloc[0]["ID"]
+        velocity = ref_row.iloc[0]["v_pen"]
 
-        # Read and interpolate reference
-        df_ref   = pd.read_csv(ref_path)
-        ref_grid = interpolate_to_grid(df_ref)
-        ref_grid = ref_grid.dropna()
-
-        # Improvement 1 — separate smoothing windows for qb and qs
-        # qb: larger window (100) to reduce slow-changing noise
+        df_ref = pd.read_csv(ref_path)
+        ref_grid = match_on_depth(df_ref).dropna()
         ref_grid["qb_MPa"] = smooth_curve(ref_grid["qb_MPa"].values, SMOOTH_WINDOW_QB)
-        ref_grid["qs_kPa"] = smooth_curve(ref_grid["qs_kPa"].values, SMOOTH_WINDOW_QS)
-        print(f"  Smoothing applied: qb window={SMOOTH_WINDOW_QB}, qs window={SMOOTH_WINDOW_QS}")
+        ref_grid["qb_grad"] = compute_depth_gradient(
+            ref_grid["qb_MPa"].values, ref_grid["depth"].values
+        )
 
         print(f"\nScenario: {scenario_id}")
-        print(f"  ID={ID}, v_pen={v_pen}, ref rows={len(ref_grid)}")
+        print(f"  ID={density}, v_pen={velocity}, ref rows={len(ref_grid)}")
 
-        # For each mass-scaled run (S != S_REF)
-        fast_rows = grp[grp["S"] != S_REF]
-        for _, fast_row in fast_rows.iterrows():
-            S_fast = fast_row["S"]
+        for _, fast_row in grp[grp["S"] != S_REF].iterrows():
+            s_fast = fast_row["S"]
             fast_path = fast_row["path"]
 
-            # Read and interpolate mass-scaled run
-            df_fast   = pd.read_csv(fast_path)
-            fast_grid = interpolate_to_grid(df_fast)
-            fast_grid = fast_grid.dropna()
-
-            # Apply same 30-point smoothing to mass-scaled runs
-            # smoothing should be applied to all curves
+            df_fast = pd.read_csv(fast_path)
+            fast_grid = match_on_depth(df_fast).dropna()
             fast_grid["qb_MPa"] = smooth_curve(fast_grid["qb_MPa"].values, SMOOTH_WINDOW_QB)
-            fast_grid["qs_kPa"] = smooth_curve(fast_grid["qs_kPa"].values, SMOOTH_WINDOW_QS)
-
-            # Match on common depth points
-            common_depths = np.intersect1d(
-                np.round(ref_grid["depth"].values, 3),
-                np.round(fast_grid["depth"].values, 3)
+            fast_grid["qb_grad"] = compute_depth_gradient(
+                fast_grid["qb_MPa"].values, fast_grid["depth"].values
             )
 
-            ref_matched  = ref_grid[np.round(ref_grid["depth"], 3).isin(
-                np.round(common_depths, 3))]
-            fast_matched = fast_grid[np.round(fast_grid["depth"], 3).isin(
-                np.round(common_depths, 3))]
+            ref_rounded = ref_grid.copy()
+            fast_rounded = fast_grid.copy()
+            ref_rounded["depth"] = ref_rounded["depth"].round(3)
+            fast_rounded["depth"] = fast_rounded["depth"].round(3)
 
-            print(f"  S={S_fast}: {len(common_depths)} common depth points")
+            merged = pd.merge(
+                ref_rounded.rename(columns={"qb_MPa": "qb_ref", "qb_grad": "qb_grad_ref"}),
+                fast_rounded.rename(columns={"qb_MPa": "qb_fast", "qb_grad": "qb_fast_grad"}),
+                on="depth",
+            )
+            print(f"  S={s_fast}: {len(merged)} common depth points")
 
-            for i, depth in enumerate(common_depths):
-                ref_qb  = ref_matched.iloc[i]["qb_MPa"]
-                ref_qs  = ref_matched.iloc[i]["qs_kPa"]
-                fast_qb = fast_matched.iloc[i]["qb_MPa"]
-                fast_qs = fast_matched.iloc[i]["qs_kPa"]
+            for _, row in merged.iterrows():
+                records.append(
+                    {
+                        "soil_model": run["name"],
+                        "scenario_id": scenario_id,
+                        "run_id": fast_row["run_id"],
+                        "ID": density,
+                        "v_pen": velocity,
+                        "S": s_fast,
+                        "depth": round(float(row["depth"]), 6),
+                        "qb_fast": round(float(row["qb_fast"]), 6),
+                        "qb_fast_grad": round(float(row["qb_fast_grad"]), 6),
+                        "qb_ref": round(float(row["qb_ref"]), 6),
+                        "res_qb": round(float(row["qb_ref"] - row["qb_fast"]), 6),
+                    }
+                )
 
-                records.append({
-                    "scenario_id": scenario_id,
-                    "soil_model":  label,
-                    "ID":          ID,
-                    "v_pen":       v_pen,
-                    "S":           S_fast,
-                    "depth":       round(depth, 3),
-                    "qb_fast":     round(fast_qb, 6),
-                    "qs_fast":     round(fast_qs, 6),
-                    "qb_ref":      round(ref_qb,  6),
-                    "qs_ref":      round(ref_qs,  6),
-                    "res_qb":      round(ref_qb  - fast_qb, 6),
-                    "res_qs":      round(ref_qs  - fast_qs, 6),
-                })
-
-    if len(records) == 0:
-        print("\nERROR: No paired simulations found.")
-        print("This means no scenario has both a S=1 reference AND a mass-scaled run.")
-        print("Make sure the extracted per-run CSV files are in data/extracted/per_run_csv/.")
-        print("\nFiles found and their scenario_ids:")
-        for _, row in df_info.iterrows():
-            print(f"  S={row['S']:3d}  scenario={row['scenario_id']}")
+    if not records:
+        print("\nERROR: no paired simulations found.")
         return None
 
     df_out = pd.DataFrame(records)
     n_before = len(df_out)
 
-    # ── Improvement 5: normalise residuals by mean signal magnitude ───────────
-    # Makes qb (MPa) and qs (kPa) comparable in scale for the model
-    qb_signal = df_out["qb_ref"].abs().replace(0, np.nan).mean()
-    qs_signal = df_out["qs_ref"].abs().replace(0, np.nan).mean()
-    df_out["res_qb_norm"] = df_out["res_qb"] / qb_signal
-    df_out["res_qs_norm"] = df_out["res_qs"] / qs_signal
-    print(f"\n  Normalisation: qb signal mean={qb_signal:.3f} MPa, "
-          f"qs signal mean={qs_signal:.3f} kPa")
+    print(f"\n  Outlier removal (threshold = {OUTLIER_STD_THRESH} sigma):")
+    keep_mask = pd.Series(True, index=df_out.index)
+    for s_value, grp in df_out.groupby("S"):
+        mean = grp["res_qb"].mean()
+        std = grp["res_qb"].std()
+        if pd.isna(std) or std == 0:
+            local_mask = pd.Series(True, index=grp.index)
+        else:
+            local_mask = (df_out.loc[grp.index, "res_qb"] - mean).abs() <= OUTLIER_STD_THRESH * std
+        n_removed = int((~local_mask).sum())
+        keep_mask.loc[grp.index] = local_mask
+        print(f"    S={s_value}: removed {n_removed} rows (mean={mean:.4f}, std={std:.4f})")
 
-    # ── Save full dataset BEFORE outlier removal — used for plotting only ────
-    PLOT_PATH = out_path.replace(".csv", "_plot.csv")
-    df_plot_save = df_out.copy()
-    df_plot_save["is_shallow"] = (df_plot_save["depth"] < MIN_TRAINING_DEPTH).astype(int)
-    df_plot_save.to_csv(PLOT_PATH, index=False)
-    print(f"  Saved plot dataset (no outlier removal) → {PLOT_PATH}")
+    df_plot = df_out.copy()
+    df_plot["is_shallow"] = (df_plot["depth"] < MIN_TRAINING_DEPTH).astype(int)
+    df_plot.to_csv(plot_path, index=False)
+    print(f"  Saved plot dataset -> {plot_path}")
 
-    # Removes interpolation artifacts and contact algorithm spikes
-    # Uses raw (non-normalised) residuals for threshold computation
-    for col in ["res_qb", "res_qs"]:
-        mean = df_out[col].mean()
-        std  = df_out[col].std()
-        mask = (df_out[col] - mean).abs() <= OUTLIER_STD_THRESHOLD * std
-        n_removed = (~mask).sum()
-        df_out = df_out[mask]
-        print(f"  Outlier removal {col}: removed {n_removed} rows "
-              f"(>{OUTLIER_STD_THRESHOLD}σ)")
-
-    # Shallow rows kept in dataset but flagged so training script can skip them
-    # Model still uses full dataset for inference/evaluation
-    df_out["is_shallow"] = (df_out["depth"] < MIN_TRAINING_DEPTH).astype(int)
-    n_shallow = df_out["is_shallow"].sum()
-    print(f"  Shallow zone (<{MIN_TRAINING_DEPTH}m): {n_shallow} rows flagged "
-          f"(excluded from training, kept for evaluation)")
-
+    df_out = df_out[keep_mask].copy()
     n_after = len(df_out)
-    print(f"  Total rows: {n_before} → {n_after} "
-          f"({n_before - n_after} removed as outliers)")
+    print(f"  Total: {n_before} -> {n_after} rows ({n_before - n_after} removed)")
 
+    df_out["is_shallow"] = (df_out["depth"] < MIN_TRAINING_DEPTH).astype(int)
+    n_shallow = int(df_out["is_shallow"].sum())
+    print(f"  Shallow zone (<{MIN_TRAINING_DEPTH}m): {n_shallow} rows flagged")
+
+    qb_signal = df_out["qb_ref"].abs().replace(0, np.nan).mean()
+    df_out["res_qb_norm"] = df_out["res_qb"] / qb_signal
     df_out.to_csv(out_path, index=False)
 
-    print(f"\n{'='*50}")
+    meta = {
+        "soil_model": run["name"],
+        "soil_model_label": label,
+        "raw_dir": str(RAW_DIR),
+        "metadata_path": str(run["metadata_path"]),
+        "expected_csv_count": EXPECTED_CSV_COUNT,
+        "observed_csv_count": len(all_files),
+        "S_ref": S_REF,
+        "density_values": [0.3, 0.6, 0.8, 0.9],
+        "velocity_values_cm_per_s": [25, 50, 100],
+        "scaling_factors": [1, 10, 30, 50, 100],
+        "smooth_window_qb": SMOOTH_WINDOW_QB,
+        "smooth_window_qs": SMOOTH_WINDOW_QS,
+        "min_training_depth": MIN_TRAINING_DEPTH,
+        "outlier_std_thresh": OUTLIER_STD_THRESH,
+        "gradient_window": GRADIENT_WINDOW,
+        "qb_signal_full": round(float(qb_signal), 6),
+        "note": (
+            "qb_signal_full is for reference only. The training script adds "
+            "qb_signal_train computed from training rows only."
+        ),
+    }
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    print(f"  Saved metadata -> {meta_path}")
+
+    print("")
+    print("=" * 60)
     print(f"Dataset built for {label}: {len(df_out):,} rows")
     print(f"Scenarios:     {df_out['scenario_id'].nunique()}")
     print(f"S values:      {sorted(df_out['S'].unique())}")
     print(f"ID values:     {sorted(df_out['ID'].unique())}")
-    print(f"Saved →        {out_path}")
-    print(f"\nColumn summary:")
+    print(f"Saved ->       {out_path}")
+    print("\nColumn summary:")
     print(df_out.describe().round(3).to_string())
 
     return df_out
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Build paired ML residual datasets from extracted per-run CSV files.")
+    parser = argparse.ArgumentParser(
+        description="Build paired ML residual datasets from extracted per-run CSV files."
+    )
     parser.add_argument(
         "--soil-model",
-        choices=["all", "mohr_coulomb", "mcm", "hypoplastic"],
+        choices=["all", "mcm", "mohr_coulomb", "hypoplastic"],
         default="all",
-        help="Limit dataset building to one soil model. 'mcm' is kept as an alias for mohr_coulomb.",
+        help="'mohr_coulomb' is accepted as an alias for 'mcm'.",
     )
     parser.add_argument(
         "--allow-partial",
         action="store_true",
-        help="Build from available CSV files even when metadata says expected runs are missing.",
+        help="Build from available CSV files even when metadata validation is incomplete.",
     )
     args = parser.parse_args()
-    selected_soil_model = "mohr_coulomb" if args.soil_model == "mcm" else args.soil_model
 
-    print(f"ROOT:    {_ROOT}")
-    print(f"DATA:    {_DATA_FOLDER}")
+    selected = normalise_soil_model(args.soil_model)
+    print(f"PROJECT: {PROJECT_ROOT}")
+    print(f"DATA:    {DATA_ROOT}")
     print(f"RAW:     {RAW_DIR}")
 
     for run in SOIL_MODEL_RUNS:
-        if selected_soil_model != "all" and run["name"] != selected_soil_model:
+        if selected != "all" and run["name"] != selected:
             continue
-        build_dataset(
-            label=run["label"],
-            patterns=run["patterns"],
-            out_path=run["out_path"],
-            metadata_path=run["metadata_path"],
-            allow_partial=args.allow_partial,
-        )
+        build_dataset(run, allow_partial=args.allow_partial)
 
 
 if __name__ == "__main__":

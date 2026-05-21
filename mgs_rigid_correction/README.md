@@ -28,7 +28,7 @@ scripts/02_generate_inputs_from_reference.py
 scripts/03_submit_slurm_array.sh      remote SLURM array script
 scripts/04_check_jobs.py              check expected files
 scripts/05_run_postprocessing.py      prepare/run ODB extraction
-scripts/06_resample_curves.py         resample extracted curves
+scripts/06_plot_pre_ml_raw_curves.py  plot raw extracted curves before ML
 scripts/07_build_ml_dataset.py        build paired residual datasets
 scripts/08_train_correction_model.py  train model and plots
 ```
@@ -119,6 +119,13 @@ After `.inp` files exist, submit from WSL:
 bash scripts/12_cluster_transfer_submit_fetch.sh submit_all
 ```
 
+By default the helper submits the full job array without an artificial task
+limit. To add a throttle intentionally, set `MGS_ARRAY_THROTTLE`, for example:
+
+```bash
+MGS_ARRAY_THROTTLE=40 bash scripts/12_cluster_transfer_submit_fetch.sh submit_all
+```
+
 Useful overrides:
 
 ```bash
@@ -133,6 +140,17 @@ Fetch results later:
 bash scripts/12_cluster_transfer_submit_fetch.sh fetch
 ```
 
+If the Codex app cannot see your WSL distribution but your normal terminal can,
+start the controlled bridge from a normal PowerShell terminal:
+
+```powershell
+.\scripts\14_wsl_cluster_bridge.ps1
+```
+
+The bridge only accepts these fixed actions through
+`.codex_cluster_bridge/request.json`: `status`, `cancel_all`, `cancel_job`,
+`submit_hypo`, `submit_mc`, `fetch_hypo`, `fetch_mc`, and `exit`.
+
 The SLURM script checks each input. If it contains `*User Material`, Abaqus is
 run with `vumat-hypo-2020-hst.for`; otherwise it runs without a user routine.
 
@@ -142,9 +160,17 @@ After `.odb` files are back in `runs/{run_id}/`:
 
 ```powershell
 python scripts\05_run_postprocessing.py --metadata data\extracted\run_metadata_phase0.csv --execute
-python scripts\06_resample_curves.py --metadata data\extracted\run_metadata_phase0.csv --matrix-config configs\matrix_phase0.yaml
+python scripts\06_plot_pre_ml_raw_curves.py
 python scripts\07_build_ml_dataset.py
 python scripts\08_train_correction_model.py
+```
+
+`06_plot_pre_ml_raw_curves.py` is a pre-ML inspection step. It reads extracted
+CSV files directly from `data/extracted/per_run_csv/`, applies only a 30-point
+moving average, and writes raw curve PNGs under:
+
+```text
+plots/raw_30pt_average/
 ```
 
 `07_build_ml_dataset.py` validates the extracted CSV files against the metadata
@@ -156,9 +182,9 @@ by accident. For an exploratory partial-data build only, add:
 python scripts\07_build_ml_dataset.py --allow-partial
 ```
 
-Both ML scripts also accept `--soil-model mohr_coulomb` or
-`--soil-model hypoplastic` when only one branch should be rebuilt. The older
-short name `mcm` is still accepted as an alias for `mohr_coulomb`.
+Both ML scripts also accept `--soil-model mcm` or `--soil-model hypoplastic`
+when only one branch should be rebuilt. The name `mohr_coulomb` is accepted as
+an alias for `mcm`.
 
 `07_build_ml_dataset.py` expects per-run CSV files in:
 
@@ -169,14 +195,17 @@ data/extracted/per_run_csv/
 It writes model-specific datasets under:
 
 ```text
-data/processed/ml/
+data/processed/ml/mcm/
+data/processed/ml/hypoplastic/
 ```
 
 `08_train_correction_model.py` writes generated outputs under:
 
 ```text
-results/ml/
-plots/ml/
+results/ml/mcm/
+results/ml/hypoplastic/
+plots/ml/mcm/
+plots/ml/hypoplastic/
 ```
 
 These generated folders are ignored by Git.

@@ -37,6 +37,7 @@ mgs_rigid_correction/plots/
 mgs_rigid_correction/reports/
 mgs_rigid_correction/results/
 mgs_rigid_correction/_generated_artifacts_backup/
+mgs_rigid_correction/.codex_cluster_bridge/
 
 # Local environment files
 .env
