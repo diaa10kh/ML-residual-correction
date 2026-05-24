@@ -12,7 +12,7 @@ from mgs_common import ensure_project_dirs, expand_matrix, load_config, project_
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate rigid-pile MGS run metadata.")
+    parser = argparse.ArgumentParser(description="Generate deformable-pile MGS run metadata.")
     parser.add_argument("--config", default=project_path("configs", "matrix_phase0.yaml"))
     parser.add_argument("--output", default=project_path("data", "extracted", "run_metadata_phase0.csv"))
     parser.add_argument(

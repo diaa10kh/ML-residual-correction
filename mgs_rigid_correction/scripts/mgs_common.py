@@ -310,7 +310,7 @@ def expand_matrix(config):
                             "S": str(S),
                             "rho_scale": "%.12g" % float(S),
                             "gravity_scale": "%.12g" % (1.0 / float(S)),
-                            "pile_type": "rigid",
+                            "pile_type": "deformable_volume",
                             "soil_model": soil_model,
                             "mc_density": mc_values["mc_density"],
                             "mc_E": mc_values["mc_E"],

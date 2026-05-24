@@ -44,8 +44,7 @@ DENS_MAP = {"LOW": 0.30, "MED": 0.60, "REF": 0.80, "HIGH": 0.90}
 VPEN_MAP = {"LOW": 25.0, "REF": 50.0, "HIGH": 100.0}
 
 SMOOTH_WINDOW_QB = 30
-SMOOTH_WINDOW_QS = 30
-MIN_TRAINING_DEPTH = 1.0
+SHALLOW_DEPTH_FLAG_M = 1.0
 OUTLIER_STD_THRESH = 3.0
 GRADIENT_WINDOW = 5
 
@@ -162,9 +161,32 @@ def match_on_depth(df: pd.DataFrame, depth_col: str = "z_m", val_col: str = "qb_
         .reset_index(drop=True)
     )
 
-    # Zero rows are pre-contact time steps, not physical resistance values.
-    df_sorted = df_sorted[df_sorted["qb_MPa"] > 0].reset_index(drop=True)
+    # Use the same positive-depth domain as the raw pre-ML plotter.  Do not
+    # remove zero qb values here; doing so before smoothing changes the first
+    # moving-average window and visibly shifts the curve near the surface.
+    df_sorted = df_sorted[df_sorted["depth"] > 0.0].reset_index(drop=True)
     return df_sorted
+
+
+def prepare_qb_curve(df: pd.DataFrame) -> pd.DataFrame:
+    grid = match_on_depth(df).dropna()
+    if grid.empty:
+        grid["qb_grad"] = []
+        return grid
+
+    grid["qb_MPa"] = smooth_curve(grid["qb_MPa"].values, SMOOTH_WINDOW_QB)
+    grid = grid.replace([np.inf, -np.inf], np.nan).dropna(subset=["depth", "qb_MPa"])
+
+    # Remove only smoothed non-positive resistance values.  This keeps the
+    # smoothing operation consistent with the raw-curve plot while still
+    # avoiding invalid qb values in the ML dataset.
+    grid = grid[grid["qb_MPa"] > 0.0].reset_index(drop=True)
+    if grid.empty:
+        grid["qb_grad"] = []
+        return grid
+
+    grid["qb_grad"] = compute_depth_gradient(grid["qb_MPa"].values, grid["depth"].values)
+    return grid
 
 
 def expected_csvs_from_metadata(metadata_path: Path):
@@ -282,11 +304,7 @@ def build_dataset(run, allow_partial: bool = False):
         velocity = ref_row.iloc[0]["v_pen"]
 
         df_ref = pd.read_csv(ref_path)
-        ref_grid = match_on_depth(df_ref).dropna()
-        ref_grid["qb_MPa"] = smooth_curve(ref_grid["qb_MPa"].values, SMOOTH_WINDOW_QB)
-        ref_grid["qb_grad"] = compute_depth_gradient(
-            ref_grid["qb_MPa"].values, ref_grid["depth"].values
-        )
+        ref_grid = prepare_qb_curve(df_ref)
 
         print(f"\nScenario: {scenario_id}")
         print(f"  ID={density}, v_pen={velocity}, ref rows={len(ref_grid)}")
@@ -296,11 +314,7 @@ def build_dataset(run, allow_partial: bool = False):
             fast_path = fast_row["path"]
 
             df_fast = pd.read_csv(fast_path)
-            fast_grid = match_on_depth(df_fast).dropna()
-            fast_grid["qb_MPa"] = smooth_curve(fast_grid["qb_MPa"].values, SMOOTH_WINDOW_QB)
-            fast_grid["qb_grad"] = compute_depth_gradient(
-                fast_grid["qb_MPa"].values, fast_grid["depth"].values
-            )
+            fast_grid = prepare_qb_curve(df_fast)
 
             ref_rounded = ref_grid.copy()
             fast_rounded = fast_grid.copy()
@@ -352,7 +366,7 @@ def build_dataset(run, allow_partial: bool = False):
         print(f"    S={s_value}: removed {n_removed} rows (mean={mean:.4f}, std={std:.4f})")
 
     df_plot = df_out.copy()
-    df_plot["is_shallow"] = (df_plot["depth"] < MIN_TRAINING_DEPTH).astype(int)
+    df_plot["is_shallow"] = (df_plot["depth"] < SHALLOW_DEPTH_FLAG_M).astype(int)
     df_plot.to_csv(plot_path, index=False)
     print(f"  Saved plot dataset -> {plot_path}")
 
@@ -360,9 +374,9 @@ def build_dataset(run, allow_partial: bool = False):
     n_after = len(df_out)
     print(f"  Total: {n_before} -> {n_after} rows ({n_before - n_after} removed)")
 
-    df_out["is_shallow"] = (df_out["depth"] < MIN_TRAINING_DEPTH).astype(int)
+    df_out["is_shallow"] = (df_out["depth"] < SHALLOW_DEPTH_FLAG_M).astype(int)
     n_shallow = int(df_out["is_shallow"].sum())
-    print(f"  Shallow zone (<{MIN_TRAINING_DEPTH}m): {n_shallow} rows flagged")
+    print(f"  Shallow zone (<{SHALLOW_DEPTH_FLAG_M}m): {n_shallow} rows flagged")
 
     qb_signal = df_out["qb_ref"].abs().replace(0, np.nan).mean()
     df_out["res_qb_norm"] = df_out["res_qb"] / qb_signal
@@ -380,10 +394,21 @@ def build_dataset(run, allow_partial: bool = False):
         "velocity_values_cm_per_s": [25, 50, 100],
         "scaling_factors": [1, 10, 30, 50, 100],
         "smooth_window_qb": SMOOTH_WINDOW_QB,
-        "smooth_window_qs": SMOOTH_WINDOW_QS,
-        "min_training_depth": MIN_TRAINING_DEPTH,
+        "shallow_depth_flag_m": SHALLOW_DEPTH_FLAG_M,
+        "shallow_depth_note": (
+            "The dataset builder only flags rows shallower than this value. "
+            "The training script controls whether shallow rows are excluded."
+        ),
         "outlier_std_thresh": OUTLIER_STD_THRESH,
         "gradient_window": GRADIENT_WINDOW,
+        "qb_preprocessing": (
+            "Rows are sorted by positive depth, qb is smoothed with the moving "
+            "average window, then smoothed non-positive qb values are removed."
+        ),
+        "shaft_resistance_note": (
+            "Shaft resistance q_s is not part of this ML dataset or the correction "
+            "model. The ML pipeline uses base resistance qb only."
+        ),
         "qb_signal_full": round(float(qb_signal), 6),
         "note": (
             "qb_signal_full is for reference only. The training script adds "

@@ -7,7 +7,10 @@ Input:
 Output:
   results/ml/{mcm,hypoplastic}/model_qb.pkl
   results/ml/{mcm,hypoplastic}/metrics.csv
+  results/ml/{mcm,hypoplastic}/metrics_by_group.csv
+  results/ml/{mcm,hypoplastic}/oof_predictions.csv
   results/ml/{mcm,hypoplastic}/test_predictions.csv
+  results/ml/{mcm,hypoplastic}/validation_folds.csv
   plots/ml/{mcm,hypoplastic}/
 
 Only high-S quantities are used as ML input features.  The S=1 response is
@@ -32,7 +35,7 @@ warnings.filterwarnings("ignore")
 
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import GroupKFold, GroupShuffleSplit
+from sklearn.model_selection import GroupKFold
 
 import matplotlib
 
@@ -53,7 +56,7 @@ PLOTS_ROOT = PROJECT_ROOT / "plots" / "ml"
 RESULTS_DIR = RESULTS_ROOT / "combined"
 PLOTS_DIR = PLOTS_ROOT / "combined"
 
-SEPARATE_S_MODELS = False
+TRAIN_MIN_DEPTH = 0.0
 
 MODEL_PARAMS = dict(
     max_iter=600,
@@ -63,6 +66,16 @@ MODEL_PARAMS = dict(
     l2_regularization=1.0,
     random_state=42,
 )
+
+# One model is trained, then the predicted residual is scaled at application
+# time.  This keeps the model conservative when small S values are already
+# close to the S=1 reference.
+S_DAMPING_ALPHA = {
+    10: 1.0,
+    30: 1.0,
+    50: 1.0,
+    100: 1.0,
+}
 
 SOIL_MODEL_RUNS = [
     {
@@ -174,6 +187,54 @@ def cross_validate(df: pd.DataFrame, target: str, n_splits=None):
     return mean_rmse, std_rmse, fold_rmses
 
 
+def grouped_oof_predictions(df_train_pool: pd.DataFrame, full_df: pd.DataFrame, target: str) -> pd.DataFrame:
+    """Create grouped out-of-fold predictions for every scenario.
+
+    The validation rows are complete scenario curves from ``full_df``. The model
+    for each fold is trained only on the remaining scenarios from
+    ``df_train_pool``.
+    """
+    groups = df_train_pool["scenario_id"].values
+    scenario_count = len(np.unique(groups))
+    if scenario_count < 2:
+        raise SystemExit("ERROR: need at least two scenarios for grouped validation")
+
+    print(f"  Grouped out-of-fold validation: {scenario_count} folds over {scenario_count} scenarios")
+    kf = GroupKFold(n_splits=scenario_count)
+    parts = []
+    rows = []
+    for fold, (tr_idx, va_idx) in enumerate(kf.split(df_train_pool, groups=groups), start=1):
+        df_tr = df_train_pool.iloc[tr_idx]
+        scenario_ids = sorted(df_train_pool.iloc[va_idx]["scenario_id"].unique())
+        model = HistGradientBoostingRegressor(**MODEL_PARAMS)
+        model.fit(build_features(df_tr).values, df_tr[target].values)
+
+        df_va = full_df[full_df["scenario_id"].isin(scenario_ids)].copy()
+        df_va = apply_model_correction(df_va, model)
+        df_va["validation_fold"] = fold
+        parts.append(df_va)
+
+        before = wape_error(df_va["qb_ref"], df_va["qb_fast"])
+        after = wape_error(df_va["qb_ref"], df_va["qb_corrected"])
+        rows.append(
+            {
+                "fold": fold,
+                "scenario_id": ";".join(scenario_ids),
+                "ID": df_va["ID"].iloc[0],
+                "v_pen": df_va["v_pen"].iloc[0],
+                "WAPE_before": before,
+                "WAPE_after": after,
+                "RMSE_before": rmse_error(df_va["qb_ref"], df_va["qb_fast"]),
+                "RMSE_after": rmse_error(df_va["qb_ref"], df_va["qb_corrected"]),
+                "n": len(df_va),
+            }
+        )
+        print(f"    fold {fold:02d}: {', '.join(scenario_ids)} WAPE {before:.3f}% -> {after:.3f}%")
+
+    pd.DataFrame(rows).to_csv(RESULTS_DIR / "validation_folds.csv", index=False)
+    return pd.concat(parts, ignore_index=True)
+
+
 def train_final(df_train: pd.DataFrame, target: str, tag: str):
     x_train = build_features(df_train).values
     y_train = df_train[target].values
@@ -199,6 +260,17 @@ def compute_and_save_normalisation(df_train: pd.DataFrame, meta_path: Path):
     meta["feature_names"] = FEATURE_NAMES
     meta["train_row_count"] = int(len(df_train))
     meta["train_scenario_count"] = int(df_train["scenario_id"].nunique())
+    meta["train_min_depth_m"] = TRAIN_MIN_DEPTH
+    meta["training_depth_policy"] = (
+        "Full depth is used for training."
+        if TRAIN_MIN_DEPTH <= 0
+        else f"Rows with depth < {TRAIN_MIN_DEPTH} m are excluded from training."
+    )
+    meta["evaluation_depth_policy"] = (
+        "Grouped out-of-fold validation evaluates complete scenario curves. "
+        "The final saved model is trained on the full training pool."
+    )
+    meta["correction_damping_alpha"] = S_DAMPING_ALPHA
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     print(f"  Updated metadata -> {meta_path}")
     return qb_signal
@@ -207,8 +279,39 @@ def compute_and_save_normalisation(df_train: pd.DataFrame, meta_path: Path):
 def corrected_frame(df: pd.DataFrame, model_qb) -> pd.DataFrame:
     out = df.copy()
     if "qb_corrected" not in out.columns:
-        x = build_features(out).values
-        out["qb_corrected"] = (out["qb_fast"] + model_qb.predict(x)).clip(lower=0)
+        out = apply_model_correction(out, model_qb)
+    elif "qb_residual_pred" not in out.columns:
+        out["qb_residual_pred"] = out["qb_corrected"] - out["qb_fast"]
+    if "correction_alpha" not in out.columns:
+        out["correction_alpha"] = correction_alpha(out)
+    return out
+
+
+def correction_alpha(df: pd.DataFrame) -> pd.Series:
+    return (
+        df["S"]
+        .round()
+        .astype(int)
+        .map(S_DAMPING_ALPHA)
+        .fillna(1.0)
+        .astype(float)
+    )
+
+
+def apply_model_correction(df: pd.DataFrame, model_qb) -> pd.DataFrame:
+    out = df.copy()
+    raw_pred = model_qb.predict(build_features(out).values) if len(out) else np.array([])
+    alpha = correction_alpha(out)
+    out["correction_alpha"] = alpha
+    out["qb_residual_pred_raw"] = raw_pred
+    out["qb_residual_pred"] = raw_pred * alpha.to_numpy()
+    out["qb_corrected"] = (out["qb_fast"] + out["qb_residual_pred"]).clip(lower=0)
+    return out
+
+
+def corrected_visual_frame(df: pd.DataFrame, model_qb) -> pd.DataFrame:
+    out = corrected_frame(df, model_qb)
+    out["qb_corrected_plot"] = out["qb_corrected"]
     return out
 
 
@@ -257,8 +360,18 @@ def finite_vmax(values, default: float = 1.0) -> float:
     return max(float(np.nanmax(finite)), default)
 
 
+def validation_context(df: pd.DataFrame) -> str:
+    if "validation_fold" in df.columns:
+        return "Grouped out-of-fold validation"
+    return "Final-model diagnostic"
+
+
+def residual_damping_active() -> bool:
+    return any(not np.isclose(alpha, 1.0) for alpha in S_DAMPING_ALPHA.values())
+
+
 def plot_correction_curves(df_in: pd.DataFrame, model_qb, n: int = 20):
-    df = corrected_frame(df_in, model_qb)
+    df = corrected_visual_frame(df_in, model_qb)
     df["scenario_base"] = df["scenario_id"].str.replace("^MC_", "", regex=True)
     scenario_order = (
         df.groupby("scenario_base")
@@ -280,8 +393,8 @@ def plot_correction_curves(df_in: pd.DataFrame, model_qb, n: int = 20):
     fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 5 * nrows))
     axes_flat = np.ravel(axes) if hasattr(axes, "ravel") else np.asarray([axes])
     fig.suptitle(
-        f"Correction curves - all {len(scenarios)} scenarios (Reference: S=1)\n"
-        "Base resistance qb [30-pt moving average applied in dataset]",
+        f"Correction curves - all {len(scenarios)} scenarios ({validation_context(df)})\n"
+        "Base resistance qb [30-pt moving average applied in dataset]; green curve shows highest-S correction",
         fontsize=13,
         fontweight="bold",
     )
@@ -295,27 +408,26 @@ def plot_correction_curves(df_in: pd.DataFrame, model_qb, n: int = 20):
             ax.set_visible(False)
             continue
 
+        for color, s_value in zip(colors, s_values):
+            grp = sub[sub["S"] == s_value].sort_values("depth")
+            ax.plot(grp["qb_fast"], grp["depth"], "--", color=color, lw=1.2, label=f"Fast (S={s_value})")
+
         ref_group = sub[sub["S"] == s_values[-1]].sort_values("depth")
+        max_group = sub[sub["S"] == s_values[-1]].sort_values("depth")
+        ax.plot(
+            max_group["qb_corrected_plot"],
+            max_group["depth"],
+            color="#2ecc71",
+            lw=2.5,
+            label=f"ML Corrected (S={plot_number(s_values[-1])} only)",
+        )
         ax.plot(
             ref_group["qb_ref"],
             ref_group["depth"],
             color="#2c3e50",
             lw=2.0,
-            alpha=0.9,
+            alpha=0.95,
             label="Reference (S=1)",
-        )
-
-        for color, s_value in zip(colors, s_values):
-            grp = sub[sub["S"] == s_value].sort_values("depth")
-            ax.plot(grp["qb_fast"], grp["depth"], "--", color=color, lw=1.2, label=f"Fast (S={s_value})")
-
-        max_group = sub[sub["S"] == s_values[-1]].sort_values("depth")
-        ax.plot(
-            max_group["qb_corrected"],
-            max_group["depth"],
-            color="#2ecc71",
-            lw=2.5,
-            label="ML Corrected",
         )
         ax.invert_yaxis()
         ax.set_xlabel("Base resistance qb [MPa]")
@@ -334,6 +446,81 @@ def plot_correction_curves(df_in: pd.DataFrame, model_qb, n: int = 20):
     print(f"  Saved -> {out}")
 
 
+def plot_test_correction_curves(df_in: pd.DataFrame, model_qb):
+    df = corrected_visual_frame(df_in, model_qb)
+    scenario_order = (
+        df.groupby("scenario_id")
+        .agg(ID=("ID", "first"), v_pen=("v_pen", "first"))
+        .sort_values(["ID", "v_pen"])
+    )
+    scenarios = scenario_order.index.tolist()
+    if not scenarios:
+        return
+
+    ncols = 3
+    nrows = int(np.ceil(len(scenarios) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 5 * nrows))
+    axes_flat = np.ravel(axes) if hasattr(axes, "ravel") else np.asarray([axes])
+    fig.suptitle(
+        f"Correction curves - {len(scenarios)} grouped out-of-fold validation scenarios (Reference: S=1)\n"
+        "Each scenario is predicted by a model trained without that scenario",
+        fontsize=13,
+        fontweight="bold",
+    )
+
+    colors = ["#f39c12", "#e74c3c", "#9b59b6", "#e67e22", "#3498db"]
+    for i, scenario_id in enumerate(scenarios):
+        ax = axes_flat[i]
+        sub = df[df["scenario_id"] == scenario_id]
+        s_values = sorted(int(s) for s in sub["S"].dropna().unique())
+        if not s_values:
+            ax.set_visible(False)
+            continue
+
+        for color, s_value in zip(colors, s_values):
+            grp = sub[sub["S"] == s_value].sort_values("depth")
+            ax.plot(grp["qb_fast"], grp["depth"], "--", color=color, lw=1.2, label=f"Fast (S={s_value})")
+
+        ref_group = sub[sub["S"] == s_values[-1]].sort_values("depth")
+        max_group = sub[sub["S"] == s_values[-1]].sort_values("depth")
+        before = wape_error(max_group["qb_ref"], max_group["qb_fast"])
+        after = wape_error(max_group["qb_ref"], max_group["qb_corrected"])
+        ax.plot(
+            max_group["qb_corrected_plot"],
+            max_group["depth"],
+            color="#2ecc71",
+            lw=2.5,
+            label="ML Corrected",
+        )
+        ax.plot(
+            ref_group["qb_ref"],
+            ref_group["depth"],
+            color="#2c3e50",
+            lw=2.0,
+            alpha=0.95,
+            label="Reference (S=1)",
+        )
+        ax.invert_yaxis()
+        ax.set_xlabel("Base resistance qb [MPa]")
+        ax.set_ylabel("Depth [m]")
+        ax.set_title(
+            f"ID={sub['ID'].iloc[0]}, v={sub['v_pen'].iloc[0]} cm/s\n"
+            f"S={s_values[-1]} WAPE {before:.1f}% -> {after:.1f}%",
+            fontsize=10,
+        )
+        ax.legend(fontsize=7)
+        ax.grid(True, alpha=0.3)
+
+    for j in range(len(scenarios), len(axes_flat)):
+        axes_flat[j].set_visible(False)
+
+    fig.tight_layout()
+    out = PLOTS_DIR / "correction_curves_test_scenarios.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved -> {out}")
+
+
 def plot_sensitivity(df_in: pd.DataFrame, model_qb):
     df = corrected_frame(df_in, model_qb)
     color_before = "#e74c3c"
@@ -346,7 +533,7 @@ def plot_sensitivity(df_in: pd.DataFrame, model_qb):
         ax.plot(grouped["S"], grouped["after"], "o-", color=color_after, lw=2, ms=7, label="After correction")
         ax.set_xlabel("Mass scaling factor S")
         ax.set_ylabel("WAPE (%) - Base resistance qb")
-        ax.set_title("WAPE vs mass scaling factor S  (Reference: S=1)", fontweight="bold")
+        ax.set_title(f"WAPE vs mass scaling factor S  ({validation_context(df)})", fontweight="bold")
         ax.set_xticks(grouped["S"].tolist())
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=9)
@@ -363,7 +550,7 @@ def plot_sensitivity(df_in: pd.DataFrame, model_qb):
         ax.plot(grouped["ID"], grouped["after"], "s-", color=color_after, lw=2, ms=7, label="After correction")
         ax.set_xlabel("Relative density ID")
         ax.set_ylabel("WAPE (%) - Base resistance qb")
-        ax.set_title("WAPE vs relative density ID  (Reference: S=1)", fontweight="bold")
+        ax.set_title(f"WAPE vs relative density ID  ({validation_context(df)})", fontweight="bold")
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=9)
         fig.tight_layout()
@@ -376,7 +563,7 @@ def plot_sensitivity(df_in: pd.DataFrame, model_qb):
     id_values = sorted(df["ID"].dropna().unique())
     if s_values and id_values:
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-        fig.suptitle("Heatmap: S x ID WAPE  (Reference: S=1)", fontsize=12, fontweight="bold")
+        fig.suptitle(f"Heatmap: S x ID WAPE  ({validation_context(df)})", fontsize=12, fontweight="bold")
         for ax, (col_use, title, cmap) in zip(
             axes,
             [
@@ -417,7 +604,7 @@ def plot_sensitivity(df_in: pd.DataFrame, model_qb):
         df_bins = df.copy()
         df_bins["depth_bin"] = pd.cut(df_bins["depth"], bins=bins, labels=labels, include_lowest=True)
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        fig.suptitle("Heatmap: S x depth WAPE  (Reference: S=1)", fontsize=12, fontweight="bold")
+        fig.suptitle(f"Heatmap: S x depth WAPE  ({validation_context(df)})", fontsize=12, fontweight="bold")
         for ax, (col_use, title, cmap) in zip(
             axes,
             [
@@ -453,7 +640,7 @@ def plot_sensitivity(df_in: pd.DataFrame, model_qb):
 
 
 def plot_publication_correction_curve(df_in: pd.DataFrame, model_qb):
-    df = corrected_frame(df_in, model_qb)
+    df = corrected_visual_frame(df_in, model_qb)
     for s_value in sorted(df["S"].dropna().unique()):
         df_s = df[df["S"] == s_value]
         best_id = None
@@ -471,9 +658,11 @@ def plot_publication_correction_curve(df_in: pd.DataFrame, model_qb):
         velocity = sub["v_pen"].iloc[0]
 
         fig, ax = plt.subplots(figsize=(8, 8))
+        before_wape = wape_error(sub["qb_ref"], sub["qb_fast"])
         fig.suptitle(
-            f"ML Correction Result - S={plot_number(s_value)}, ID={plot_number(id_value)}, v={velocity:g} cm/s\n"
-            f"Reference: S=1  |  WAPE after correction = {best_wape:.1f}%",
+            f"Best-case Correction Curve - S={plot_number(s_value)}, "
+            f"ID={plot_number(id_value)}, v={velocity:g} cm/s\n"
+            f"{validation_context(df)}  |  WAPE {before_wape:.1f}% -> {best_wape:.1f}%",
             fontsize=11,
             fontweight="bold",
         )
@@ -485,8 +674,15 @@ def plot_publication_correction_curve(df_in: pd.DataFrame, model_qb):
             lw=2.0,
             label=f"Fast (S={plot_number(s_value)})",
         )
-        ax.plot(sub["qb_corrected"], sub["depth"], "-", color="#2ecc71", lw=2.5, label="Corrected")
-        ax.plot(sub["qb_ref"], sub["depth"], "-", color="#2c3e50", lw=2.0, alpha=0.85, label="Reference (S=1)")
+        ax.plot(
+            sub["qb_corrected_plot"],
+            sub["depth"],
+            "-",
+            color="#2ecc71",
+            lw=2.5,
+            label="Corrected",
+        )
+        ax.plot(sub["qb_ref"], sub["depth"], "-", color="#2c3e50", lw=2.0, alpha=0.95, label="Reference (S=1)")
         ax.invert_yaxis()
         ax.set_xlabel("Base resistance qb [MPa]", fontsize=11)
         ax.set_ylabel("Depth [m]", fontsize=11)
@@ -511,7 +707,11 @@ def plot_error_reduction_summary(df_in: pd.DataFrame, model_qb):
     ]
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    fig.suptitle("Error Reduction Summary - Base resistance qb  (Reference: S=1)", fontsize=13, fontweight="bold")
+    fig.suptitle(
+        f"Error Reduction Summary - Base resistance qb  ({validation_context(df)})",
+        fontsize=13,
+        fontweight="bold",
+    )
     for ax, (metric_name, metric_fn) in zip(axes, metric_specs):
         before = []
         after = []
@@ -547,24 +747,26 @@ def plot_error_reduction_summary(df_in: pd.DataFrame, model_qb):
     print(f"  Saved -> {out}")
 
 
-def plot_predicted_vs_actual(df_in: pd.DataFrame, model_qb):
-    df = df_in.copy()
+def plot_residual_scatter(
+    df_in: pd.DataFrame,
+    model_qb,
+    pred_col: str,
+    ylabel: str,
+    title: str,
+    filename: str,
+):
+    df = corrected_frame(df_in, model_qb)
     s_values = sorted(df["S"].dropna().unique())
     if not s_values:
         return
 
     fig, axes = plt.subplots(1, len(s_values), figsize=(7 * len(s_values), 6))
     axes = np.ravel(axes) if hasattr(axes, "ravel") else np.asarray([axes])
-    fig.suptitle(
-        "Predicted vs Actual Residual - Base resistance qb\n"
-        "(Reference: S=1)  |  Points along diagonal = correct prediction",
-        fontsize=11,
-        fontweight="bold",
-    )
+    fig.suptitle(title, fontsize=11, fontweight="bold")
 
     for ax, s_value in zip(axes, s_values):
         sub = df[df["S"] == s_value]
-        pred_res = model_qb.predict(build_features(sub).values)
+        pred_res = sub[pred_col].values
         true_res = sub["res_qb"].values
         ax.scatter(true_res, pred_res, s=8, alpha=0.4, color="#3498db")
         lim = finite_vmax(np.concatenate([np.abs(true_res), np.abs(pred_res)])) * 1.05
@@ -591,12 +793,69 @@ def plot_predicted_vs_actual(df_in: pd.DataFrame, model_qb):
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)
         ax.set_xlabel("Actual residual [MPa]")
-        ax.set_ylabel("Predicted residual [MPa]")
+        ax.set_ylabel(ylabel)
         ax.set_title(f"S={plot_number(s_value)}")
         ax.axhline(0, color="gray", lw=0.8, alpha=0.5)
         ax.axvline(0, color="gray", lw=0.8, alpha=0.5)
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=8, loc="lower right")
+    fig.tight_layout()
+    out = PLOTS_DIR / filename
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved -> {out}")
+
+
+def plot_predicted_vs_actual(df_in: pd.DataFrame, model_qb):
+    """Plot corrected qb directly against the S=1 reference qb."""
+    df = corrected_frame(df_in, model_qb)
+    s_values = sorted(df["S"].dropna().unique())
+    if not s_values:
+        return
+
+    fig, axes = plt.subplots(1, len(s_values), figsize=(7 * len(s_values), 6))
+    axes = np.ravel(axes) if hasattr(axes, "ravel") else np.asarray([axes])
+    fig.suptitle(
+        "Predicted vs Actual Base Resistance qb\n"
+        f"{validation_context(df)}  |  Actual = S=1 reference",
+        fontsize=12,
+        fontweight="bold",
+    )
+
+    for ax, s_value in zip(axes, s_values):
+        sub = df[df["S"] == s_value]
+        ref = sub["qb_ref"].values
+        fast = sub["qb_fast"].values
+        corrected = sub["qb_corrected"].values
+
+        limit = finite_vmax(np.concatenate([ref, fast, corrected])) * 1.03
+        ax.scatter(ref, fast, s=7, alpha=0.18, color="#e74c3c", label="Fast raw")
+        ax.scatter(ref, corrected, s=7, alpha=0.24, color="#2ecc71", label="Corrected")
+        ax.plot([0, limit], [0, limit], "k--", lw=1.4, label="Perfect (y=x)")
+
+        before_wape = wape_error(ref, fast)
+        after_wape = wape_error(ref, corrected)
+        before_rmse = rmse_error(ref, fast)
+        after_rmse = rmse_error(ref, corrected)
+        ax.text(
+            0.05,
+            0.92,
+            f"WAPE {before_wape:.2f}% -> {after_wape:.2f}%\n"
+            f"RMSE {before_rmse:.2f} -> {after_rmse:.2f} MPa",
+            transform=ax.transAxes,
+            fontsize=9,
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.85),
+        )
+
+        ax.set_xlim(0, limit)
+        ax.set_ylim(0, limit)
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlabel("Actual qb: reference S=1 [MPa]")
+        ax.set_ylabel("Predicted qb [MPa]")
+        ax.set_title(f"S={plot_number(s_value)}")
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8, loc="lower right")
+
     fig.tight_layout()
     out = PLOTS_DIR / "pub_C_predicted_vs_actual.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
@@ -604,8 +863,50 @@ def plot_predicted_vs_actual(df_in: pd.DataFrame, model_qb):
     print(f"  Saved -> {out}")
 
 
+def plot_residual_prediction_diagnostic(df_in: pd.DataFrame, model_qb):
+    if not residual_damping_active():
+        obsolete = PLOTS_DIR / "pub_C_raw_predicted_vs_actual.png"
+        if obsolete.exists():
+            obsolete.unlink()
+        plot_residual_scatter(
+            df_in,
+            model_qb,
+            pred_col="qb_residual_pred",
+            ylabel="Predicted residual [MPa]",
+            title=(
+                "Predicted vs Actual Residual - Base resistance qb\n"
+                f"{validation_context(df_in)}  |  No residual damping applied"
+            ),
+            filename="diagnostic_residual_predicted_vs_actual.png",
+        )
+        return
+
+    plot_residual_scatter(
+        df_in,
+        model_qb,
+        pred_col="qb_residual_pred_raw",
+        ylabel="Raw predicted residual [MPa]",
+        title=(
+            "Raw Predicted vs Actual Residual - Base resistance qb\n"
+            f"{validation_context(df_in)}  |  Before residual damping"
+        ),
+        filename="diagnostic_raw_residual_predicted_vs_actual.png",
+    )
+    plot_residual_scatter(
+        df_in,
+        model_qb,
+        pred_col="qb_residual_pred",
+        ylabel="Applied residual [MPa]",
+        title=(
+            "Applied vs Actual Residual - Base resistance qb\n"
+            f"{validation_context(df_in)}  |  After residual damping"
+        ),
+        filename="diagnostic_residual_predicted_vs_actual.png",
+    )
+
+
 def plot_depth_error_profile(df_in: pd.DataFrame, model_qb):
-    df = corrected_frame(df_in, model_qb)
+    df = corrected_visual_frame(df_in, model_qb)
     s_values = sorted(df["S"].dropna().unique())
     if not s_values:
         return
@@ -613,7 +914,7 @@ def plot_depth_error_profile(df_in: pd.DataFrame, model_qb):
     fig, axes = plt.subplots(1, len(s_values), figsize=(7 * len(s_values), 7), sharey=True)
     axes = np.ravel(axes) if hasattr(axes, "ravel") else np.asarray([axes])
     fig.suptitle(
-        "Error Profile vs Depth  (Reference: S=1)\nMean +/- 1 std across all scenarios",
+        f"Error Profile vs Depth  ({validation_context(df)})\nMean +/- 1 std across all scenarios",
         fontsize=12,
         fontweight="bold",
     )
@@ -629,7 +930,7 @@ def plot_depth_error_profile(df_in: pd.DataFrame, model_qb):
         for depth in depths:
             sub = sub_s[sub_s["depth"] == depth]
             fast_err = (sub["qb_fast"] - sub["qb_ref"]).values
-            corr_err = (sub["qb_corrected"] - sub["qb_ref"]).values
+            corr_err = (sub["qb_corrected_plot"] - sub["qb_ref"]).values
             fast_mean.append(np.mean(fast_err))
             fast_std.append(np.std(fast_err))
             corr_mean.append(np.mean(corr_err))
@@ -692,7 +993,7 @@ def plot_improvement_percentage(df_in: pd.DataFrame, model_qb):
     ax.axvline(0, color="black", lw=1.1)
     ax.set_xlabel("WAPE improvement (percentage points)")
     ax.set_title(
-        "Error Improvement per Scenario - Base resistance qb  (Reference: S=1)\n"
+        f"Error Improvement per Scenario - Base resistance qb  ({validation_context(df)})\n"
         "Positive = correction helped, Negative = correction hurt",
         fontweight="bold",
     )
@@ -710,6 +1011,103 @@ def plot_improvement_percentage(df_in: pd.DataFrame, model_qb):
         )
     fig.tight_layout()
     out = PLOTS_DIR / "pub_E_improvement_per_scenario.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved -> {out}")
+
+
+def plot_improvement_matrix(df_in: pd.DataFrame, model_qb):
+    df = corrected_frame(df_in, model_qb)
+    s_values = sorted(df["S"].dropna().unique())
+    id_values = sorted(df["ID"].dropna().unique())
+    v_values = sorted(df["v_pen"].dropna().unique())
+    if not s_values or not id_values or not v_values:
+        return
+
+    rows = []
+    for (s_value, id_value, v_value), grp in df.groupby(["S", "ID", "v_pen"]):
+        before = wape_error(grp["qb_ref"], grp["qb_fast"])
+        after = wape_error(grp["qb_ref"], grp["qb_corrected"])
+        if np.isnan(before) or np.isnan(after):
+            continue
+        rows.append(
+            {
+                "S": s_value,
+                "ID": id_value,
+                "v_pen": v_value,
+                "before": before,
+                "after": after,
+                "improvement": before - after,
+            }
+        )
+    if not rows:
+        return
+
+    df_imp = pd.DataFrame(rows)
+    span = finite_vmax(df_imp["improvement"].abs().values)
+    norm = matplotlib.colors.TwoSlopeNorm(vmin=-span, vcenter=0.0, vmax=span)
+
+    fig, axes = plt.subplots(1, len(s_values), figsize=(5.1 * len(s_values), 4.3), sharey=True)
+    axes = np.ravel(axes) if hasattr(axes, "ravel") else np.asarray([axes])
+    fig.suptitle(
+        f"WAPE Improvement Matrix - Base resistance qb  ({validation_context(df)})",
+        fontsize=13,
+        fontweight="bold",
+    )
+
+    im = None
+    for ax, s_value in zip(axes, s_values):
+        mat = np.full((len(id_values), len(v_values)), np.nan)
+        before_mat = np.full_like(mat, np.nan)
+        after_mat = np.full_like(mat, np.nan)
+        for i, id_value in enumerate(id_values):
+            for j, v_value in enumerate(v_values):
+                row = df_imp[
+                    (df_imp["S"] == s_value)
+                    & (df_imp["ID"] == id_value)
+                    & (df_imp["v_pen"] == v_value)
+                ]
+                if row.empty:
+                    continue
+                mat[i, j] = row["improvement"].iloc[0]
+                before_mat[i, j] = row["before"].iloc[0]
+                after_mat[i, j] = row["after"].iloc[0]
+
+        im = ax.imshow(mat, cmap="RdYlGn", norm=norm, aspect="auto")
+        ax.set_title(f"S={plot_number(s_value)}")
+        ax.set_xticks(range(len(v_values)))
+        ax.set_xticklabels([plot_number(v) for v in v_values])
+        ax.set_yticks(range(len(id_values)))
+        ax.set_yticklabels([plot_number(i) for i in id_values])
+        ax.set_xlabel("Penetration velocity [cm/s]")
+        ax.grid(False)
+        for i in range(len(id_values)):
+            for j in range(len(v_values)):
+                if not np.isfinite(mat[i, j]):
+                    continue
+                color = "white" if abs(mat[i, j]) > 0.55 * span else "black"
+                ax.text(
+                    j,
+                    i,
+                    f"{mat[i, j]:+.1f}pp\n{before_mat[i, j]:.1f}->{after_mat[i, j]:.1f}",
+                    ha="center",
+                    va="center",
+                    fontsize=8,
+                    color=color,
+                    fontweight="bold" if mat[i, j] < 0 else "normal",
+                )
+    axes[0].set_ylabel("Relative density ID")
+    fig.subplots_adjust(left=0.055, right=0.90, top=0.78, bottom=0.16, wspace=0.08)
+    if im is not None:
+        cbar = fig.colorbar(
+            im,
+            ax=axes.tolist(),
+            shrink=0.82,
+            pad=0.025,
+            label="WAPE improvement (percentage points)",
+        )
+        cbar.ax.tick_params(labelsize=9)
+    out = PLOTS_DIR / "pub_G_wape_improvement_matrix.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved -> {out}")
@@ -771,6 +1169,26 @@ def save_metrics(df_test: pd.DataFrame):
     return df_metrics
 
 
+def save_grouped_metrics(df_test: pd.DataFrame):
+    rows = []
+    for group_col in ["S", "ID", "v_pen", "scenario_id"]:
+        for value, grp in df_test.groupby(group_col):
+            rows.append(
+                {
+                    "group": group_col,
+                    "value": value,
+                    "WAPE_before": wape_error(grp["qb_ref"], grp["qb_fast"]),
+                    "WAPE_after": wape_error(grp["qb_ref"], grp["qb_corrected"]),
+                    "RMSE_before": rmse_error(grp["qb_ref"], grp["qb_fast"]),
+                    "RMSE_after": rmse_error(grp["qb_ref"], grp["qb_corrected"]),
+                    "n": len(grp),
+                }
+            )
+    out = pd.DataFrame(rows)
+    out.to_csv(RESULTS_DIR / "metrics_by_group.csv", index=False)
+    return out
+
+
 def train_soil_model(run):
     global RESULTS_DIR, PLOTS_DIR
 
@@ -803,79 +1221,41 @@ def train_soil_model(run):
     print(f"ID values: {sorted(df['ID'].unique())}")
     print(f"Depth:     {df['depth'].min():.2f} - {df['depth'].max():.2f} m")
 
-    if "is_shallow" in df.columns:
-        df_train_pool = df[df["is_shallow"] == 0].copy()
-        print(f"Shallow rows excluded from training: {int((df['is_shallow'] == 1).sum())}")
+    if TRAIN_MIN_DEPTH > 0:
+        df_train_pool = df[df["depth"] >= TRAIN_MIN_DEPTH].copy()
+        print(
+            f"Training depth policy: excluding rows with depth < {TRAIN_MIN_DEPTH:g} m. "
+            "Evaluation still uses complete scenario curves."
+        )
     else:
         df_train_pool = df.copy()
+        print("Training depth policy: full depth included (TRAIN_MIN_DEPTH = 0.0 m)")
+
+    if "is_shallow" in df.columns:
+        print(
+            f"Rows flagged shallow in dataset: {int((df['is_shallow'] == 1).sum())}. "
+            "This flag is diagnostic unless TRAIN_MIN_DEPTH is set above 0."
+        )
     print(f"Training pool: {len(df_train_pool):,} rows")
 
     if df_train_pool["scenario_id"].nunique() < 2:
         raise SystemExit(f"ERROR: need at least two scenarios to train {label}")
 
-    s_values = sorted(df_train_pool["S"].unique())
-    if SEPARATE_S_MODELS and len(s_values) > 1:
-        print(f"\nTraining separate models for each S level: {s_values}")
-        models_qb = {}
-        test_parts = []
-        cv_rows = []
-        train_parts = []
-        for s_value in s_values:
-            df_s = df_train_pool[df_train_pool["S"] == s_value]
-            print(f"\n--- S={s_value}: {len(df_s):,} rows ---")
-            cv_mean, cv_std, fold_rmses = cross_validate(df_s, "res_qb")
-            cv_rows.append({"S": s_value, "cv_rmse_mean": cv_mean, "cv_rmse_std": cv_std, "folds": len(fold_rmses)})
+    print("\nTraining combined model for all S levels")
+    cv_mean, cv_std, fold_rmses = cross_validate(df_train_pool, "res_qb")
+    pd.DataFrame(
+        [{"S": "all", "cv_rmse_mean": cv_mean, "cv_rmse_std": cv_std, "folds": len(fold_rmses)}]
+    ).to_csv(RESULTS_DIR / "cv_summary.csv", index=False)
 
-            splitter = GroupShuffleSplit(n_splits=1, test_size=0.20, random_state=42)
-            tr_idx, te_idx = next(splitter.split(df_s, groups=df_s["scenario_id"]))
-            df_tr = df_s.iloc[tr_idx]
-            test_scenario_ids = df_s.iloc[te_idx]["scenario_id"].unique()
-            df_te = df[(df["S"] == s_value) & (df["scenario_id"].isin(test_scenario_ids))].copy()
-            train_parts.append(df_tr)
-            test_parts.append(df_te)
-            models_qb[s_value] = train_final(df_tr, "res_qb", f"qb_S{s_value}")
+    df_oof = grouped_oof_predictions(df_train_pool, df, "res_qb")
+    compute_and_save_normalisation(df_train_pool, meta_path)
+    model_qb = train_final(df_train_pool, "res_qb", "qb")
 
-        df_test = pd.concat(test_parts)
-        df_test["qb_corrected"] = np.nan
-        for s_value in s_values:
-            mask = df_test["S"] == s_value
-            x = build_features(df_test[mask]).values
-            df_test.loc[mask, "qb_corrected"] = (
-                df_test.loc[mask, "qb_fast"] + models_qb[s_value].predict(x)
-            ).clip(lower=0)
-
-        with (RESULTS_DIR / "models_qb_per_S.pkl").open("wb") as handle:
-            pickle.dump(models_qb, handle)
-        model_qb = models_qb[max(s_values)]
-        with (RESULTS_DIR / "model_qb.pkl").open("wb") as handle:
-            pickle.dump(model_qb, handle)
-        compute_and_save_normalisation(pd.concat(train_parts), meta_path)
-        pd.DataFrame(cv_rows).to_csv(RESULTS_DIR / "cv_summary.csv", index=False)
-    else:
-        print("\nTraining combined model for all S levels")
-        cv_mean, cv_std, fold_rmses = cross_validate(df_train_pool, "res_qb")
-        pd.DataFrame(
-            [{"S": "all", "cv_rmse_mean": cv_mean, "cv_rmse_std": cv_std, "folds": len(fold_rmses)}]
-        ).to_csv(RESULTS_DIR / "cv_summary.csv", index=False)
-
-        splitter = GroupShuffleSplit(n_splits=1, test_size=0.20, random_state=42)
-        tr_idx, te_idx = next(splitter.split(df_train_pool, groups=df_train_pool["scenario_id"]))
-        df_train = df_train_pool.iloc[tr_idx]
-        test_scenario_ids = df_train_pool.iloc[te_idx]["scenario_id"].unique()
-        df_test = df[df["scenario_id"].isin(test_scenario_ids)].copy()
-
-        print(
-            f"Train: {df_train['scenario_id'].nunique()} scenarios; "
-            f"Test: {df_test['scenario_id'].nunique()} scenarios, complete curve"
-        )
-        compute_and_save_normalisation(df_train, meta_path)
-        model_qb = train_final(df_train, "res_qb", "qb")
-        df_test["qb_corrected"] = (
-            df_test["qb_fast"] + model_qb.predict(build_features(df_test).values)
-        ).clip(lower=0)
-
-    df_test.to_csv(RESULTS_DIR / "test_predictions.csv", index=False)
-    save_metrics(df_test)
+    df_oof.to_csv(RESULTS_DIR / "oof_predictions.csv", index=False)
+    # Backwards-compatible name used by older notebooks/docs.
+    df_oof.to_csv(RESULTS_DIR / "test_predictions.csv", index=False)
+    save_metrics(df_oof)
+    save_grouped_metrics(df_oof)
 
     plot_path = data_path.with_name("real_dataset_plot.csv")
     if plot_path.exists():
@@ -888,18 +1268,23 @@ def train_soil_model(run):
     for obsolete_plot in [
         PLOTS_DIR / "pub_A_representative_correction.png",
         PLOTS_DIR / "sensitivity_shallow_vs_deep.png",
+        PLOTS_DIR / "pub_C_raw_predicted_vs_actual.png",
+        PLOTS_DIR / "diagnostic_raw_residual_predicted_vs_actual.png",
     ]:
         if obsolete_plot.exists():
             obsolete_plot.unlink()
 
     print("\nGenerating plots...")
     plot_correction_curves(df_plot, model_qb)
-    plot_sensitivity(df_plot, model_qb)
-    plot_publication_correction_curve(df_plot, model_qb)
-    plot_error_reduction_summary(df_test, model_qb)
-    plot_predicted_vs_actual(df_plot, model_qb)
-    plot_depth_error_profile(df_plot, model_qb)
-    plot_improvement_percentage(df_test, model_qb)
+    plot_test_correction_curves(df_oof, model_qb)
+    plot_sensitivity(df_oof, model_qb)
+    plot_publication_correction_curve(df_oof, model_qb)
+    plot_error_reduction_summary(df_oof, model_qb)
+    plot_predicted_vs_actual(df_oof, model_qb)
+    plot_residual_prediction_diagnostic(df_oof, model_qb)
+    plot_depth_error_profile(df_oof, model_qb)
+    plot_improvement_percentage(df_oof, model_qb)
+    plot_improvement_matrix(df_oof, model_qb)
     plot_correlation_matrix(df, model_qb)
 
     print(f"\nDone. Models -> {RESULTS_DIR}  Plots -> {PLOTS_DIR}")

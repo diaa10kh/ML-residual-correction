@@ -1,8 +1,15 @@
-# Rigid-Pile MGS Residual Correction Workflow
+# Deformable-Pile MGS Residual Correction Workflow
 
 This folder is the active workflow. It generates Abaqus input files from one
 checked reference input file, runs the simulations on the cluster, extracts ODB
 curves, and trains a residual correction model.
+
+Important modelling note: despite the historical folder name
+`mgs_rigid_correction`, the active simplified simulations use a deformable steel
+volume-element pile. The checked reference input contains a steel `C3D8R` pile
+with a solid section assigned to material `Stahl`; the rigid-body constraint in
+the reference input applies to the press/loading body (`Presse`), not to the
+pile itself.
 
 Run commands from this folder unless noted otherwise:
 
@@ -211,6 +218,12 @@ plots/ml/mcm/
 plots/ml/hypoplastic/
 ```
 
+Each result folder contains the final model, overall validation metrics,
+grouped validation metrics (`metrics_by_group.csv`), out-of-fold predictions
+(`oof_predictions.csv`; also written as `test_predictions.csv` for backwards
+compatibility), and per-scenario validation fold summaries
+(`validation_folds.csv`).
+
 These generated folders are ignored by Git.
 
 The ML model is trained only for base resistance `q_b`. It predicts the
@@ -221,20 +234,65 @@ res_qb = qb_ref - qb_fast
 qb_corrected = qb_fast + predicted_res_qb
 ```
 
+Shaft resistance `q_s` is intentionally not trained or corrected in this
+workflow. It is small, sensitive to local changes, and there is no matching
+centrifuge-test `q_s` result available for the same correction target.
+
 Only high-S quantities are used as ML input features. The S=1 response is used
-only as the reference target. Rows flagged as shallow by the dataset builder
-(`depth < 1 m`) are excluded from training, but final metrics are evaluated on
-the complete held-out curves. The final reported metrics are:
+only as the reference target. The current model is trained on the complete
+depth range, including rows flagged as shallow by the dataset builder
+(`depth < 1 m`), and the green ML correction curve is plotted from the surface.
+The predicted residual is applied through an optional S-dependent scale factor.
+All current factors are set to 1.0, so no damping is active:
+
+```text
+alpha(S=10) = 1.0
+alpha(S=30) = 1.0
+alpha(S=50) = 1.0
+alpha(S=100) = 1.0
+```
+
+Thus, the current reported correction is the raw ML residual correction without
+additional damping.
+
+The final reported metrics are:
 
 ```text
 WAPE(%) = 100 * sum(abs(qb_ref - qb_pred)) / sum(abs(qb_ref))
 RMSE    = sqrt(mean((qb_pred - qb_ref)^2))
 ```
 
+The generated `metrics.csv` and `test_predictions.csv` are based on grouped
+out-of-fold validation by `scenario_id`. Each density-velocity scenario is
+predicted by a model trained without that scenario, so the reported validation
+metrics cover all 12 density-velocity scenarios. The processed dataset contains
+all four density levels (`ID=0.3, 0.6, 0.8, 0.9`) and all three velocity levels
+(`25, 50, 100 cm/s`):
+
+```text
+4 densities x 3 velocities x 4 high-S correction cases = 48 corrected curves
+```
+
+Additional grouped breakdowns are written to `metrics_by_group.csv`, and the
+per-fold scenario metrics are written to `validation_folds.csv`.
+
 The generated plot set includes correction curves, WAPE sensitivity plots,
-WAPE heatmaps, error-reduction summaries, predicted-vs-actual residual plots,
-depth error profiles, scenario-improvement bars, and a feature/target
-correlation matrix. More detail is documented in:
+WAPE heatmaps, error-reduction summaries, predicted-vs-actual `q_b` plots,
+depth error profiles, scenario-improvement bars, a WAPE improvement matrix, a
+residual-prediction diagnostic plot, and a feature/target correlation matrix.
+Most publication-style performance figures are generated from
+`oof_predictions.csv`, so they use grouped out-of-fold predictions. The
+`correction_curves_all.png` panel is explicitly a final-model diagnostic, not
+validation evidence.
+
+`pub_A_correction_curve_S*.png` is a best-case grouped out-of-fold example for
+each S level. Use it as an illustrative correction curve and pair it with
+`pub_B`, `pub_E`, or `pub_G` when discussing validation strength. `pub_C` now
+plots actual/reference `q_b` against raw and corrected predicted `q_b`; the
+older residual-vs-residual view is saved as
+`diagnostic_residual_predicted_vs_actual.png`.
+
+More detail is documented in:
 
 ```text
 docs/current_ml_pipeline.md
@@ -273,6 +331,11 @@ For every generated input:
 rho_scaled = S * rho_original
 g_scaled   = g_original / S
 ```
+
+The active input generator applies the density scaling to the soil material and
+to the deformable steel pile material. The gravity scaling is applied to the
+soil gravity load. The pile remains a deformable volume-element pile; it is not
+converted into a rigid body by the simplified workflow.
 
 The matrix currently uses four relative-density levels (`ID=0.3, 0.6, 0.8,
 0.9`), three penetration velocities (`0.25, 0.50, 1.00 m/s`, equivalent to

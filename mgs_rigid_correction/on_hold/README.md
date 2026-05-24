@@ -19,4 +19,12 @@ construction from Abaqus Python scripts.
 ## training_legacy.yaml
 
 This is the configuration stub for the older non-student ML script sequence.
-The active training script is `../scripts/08_train_correction_model.py`.
+The active ML sequence is now:
+
+```powershell
+python ..\scripts\07_build_ml_dataset.py
+python ..\scripts\08_train_correction_model.py
+```
+
+Use the generated grouped out-of-fold outputs from the active trainer for
+validation metrics and paper figures.

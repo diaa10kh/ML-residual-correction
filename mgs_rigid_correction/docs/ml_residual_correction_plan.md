@@ -4,6 +4,10 @@
 > background only and contains older script names, metrics, and folder ideas.
 > The active workflow is documented in `../README.md` and
 > `current_ml_pipeline.md`.
+>
+> Correction note: the active simplified repository now uses a deformable steel
+> volume-element pile. The rigid-pile language below is historical planning
+> text and should not be used to describe the current simulations.
 
 ## Implementation addendum
 
