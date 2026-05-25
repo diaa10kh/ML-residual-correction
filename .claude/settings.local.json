@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash ./scripts/12_cluster_transfer_submit_fetch.sh submit_all 0 0)",
+      "Bash(wsl wslpath *)",
+      "Bash(wsl bash *)",
+      "Bash(wsl ssh *)"
+    ]
+  }
+}

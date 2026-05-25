@@ -1,10 +1,10 @@
 #!/bin/bash
-# Remote SLURM array script for rigid-pile MGS Abaqus jobs.
+# Remote SLURM array script for full-version deformable-pile MGS Abaqus jobs.
 # This follows the working TUHH cluster pattern from 2D_PullOut_Submit.sh:
 # submit from a flat directory of .inp files, copy one selected input to a
 # job-specific /work folder, run Abaqus there, then copy result files back.
 
-#SBATCH --job-name=mgs_rigid
+#SBATCH --job-name=mgs_full_hypo
 #SBATCH --ntasks=1
 #SBATCH --time=50:00:00
 #SBATCH --cpus-per-task=8
@@ -24,7 +24,7 @@ kuerzel=${MGS_CLUSTER_USER:-cda6556}
 institut=${MGS_CLUSTER_INSTITUTE:-gbt}
 cpus=${SLURM_CPUS_PER_TASK:-8}
 userroutine=${MGS_USERROUTINE:-vumat-hypo-2020-hst.for}
-project_name=${MGS_PROJECT_NAME:-MGS_Rigid_Correction}
+project_name=${MGS_PROJECT_NAME:-MGS_Full_Hypoplastic}
 
 ############################################################
 # -  No changes needed beyond this point  -                #

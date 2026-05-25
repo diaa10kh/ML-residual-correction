@@ -100,7 +100,15 @@ SOIL_MODEL_RUNS = [
 def normalise_soil_model(value: str) -> str:
     if value == "mohr_coulomb":
         return "mcm"
+    if value == "both":
+        return "all"
     return value
+
+
+def feature_or_default(df: pd.DataFrame, column: str, default: float = 0.0) -> pd.Series:
+    if column in df.columns:
+        return pd.to_numeric(df[column], errors="coerce").fillna(default)
+    return pd.Series(default, index=df.index, dtype=float)
 
 
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -111,6 +119,11 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     feat["S"] = df["S"]
     feat["depth"] = df["depth"]
     feat["qb_fast"] = df["qb_fast"]
+    feat["D_m"] = feature_or_default(df, "D_m")
+    feat["penetration_m"] = feature_or_default(df, "penetration_m")
+    feat["penetration_over_D"] = feature_or_default(df, "penetration_over_D")
+    feat["depth_over_D"] = feature_or_default(df, "depth_over_D")
+    feat["depth_over_penetration"] = feature_or_default(df, "depth_over_penetration")
 
     if "qb_fast_grad" in df.columns:
         feat["qb_fast_grad"] = df["qb_fast_grad"].fillna(0.0)
@@ -124,6 +137,8 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     feat["v_x_S"] = df["v_pen"] * log_s
     feat["grad_x_S"] = feat["qb_fast_grad"] * log_s
     feat["grad_x_ID"] = feat["qb_fast_grad"] * df["ID"]
+    feat["S_x_depth_over_D"] = log_s * feat["depth_over_D"]
+    feat["S_x_penetration_over_D"] = log_s * feat["penetration_over_D"]
 
     return feat.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
@@ -138,6 +153,11 @@ FEATURE_NAMES = list(
                 "depth": [5.0],
                 "qb_fast": [10.0],
                 "qb_fast_grad": [1.5],
+                "D_m": [0.60],
+                "penetration_m": [9.0],
+                "penetration_over_D": [15.0],
+                "depth_over_D": [8.333333],
+                "depth_over_penetration": [0.555556],
             }
         )
     ).columns
@@ -235,6 +255,100 @@ def grouped_oof_predictions(df_train_pool: pd.DataFrame, full_df: pd.DataFrame, 
     return pd.concat(parts, ignore_index=True)
 
 
+def holdout_validation_summary(
+    df_train_pool: pd.DataFrame,
+    full_df: pd.DataFrame,
+    target: str,
+    group_col: str,
+    strategy: str,
+    output_name: str,
+):
+    """Run stricter holdout validation for one geometry-related grouping."""
+    if group_col not in df_train_pool.columns or group_col not in full_df.columns:
+        print(f"  {strategy} skipped: missing column {group_col}")
+        return None
+
+    train_groups = pd.Series(df_train_pool[group_col]).dropna().unique()
+    if len(train_groups) < 2:
+        print(f"  {strategy} skipped: fewer than two groups")
+        return None
+
+    print(f"  {strategy}: {len(train_groups)} folds by {group_col}")
+    rows = []
+    parts = []
+    for fold, value in enumerate(sorted(train_groups, key=lambda item: str(item)), start=1):
+        df_tr = df_train_pool[df_train_pool[group_col] != value]
+        df_va = full_df[full_df[group_col] == value].copy()
+        if df_tr.empty or df_va.empty:
+            continue
+
+        model = HistGradientBoostingRegressor(**MODEL_PARAMS)
+        model.fit(build_features(df_tr).values, df_tr[target].values)
+        df_va = apply_model_correction(df_va, model)
+        parts.append(df_va)
+
+        before = wape_error(df_va["qb_ref"], df_va["qb_fast"])
+        after = wape_error(df_va["qb_ref"], df_va["qb_corrected"])
+        rows.append(
+            {
+                "strategy": strategy,
+                "fold": fold,
+                "holdout_column": group_col,
+                "holdout_value": value,
+                "train_rows": len(df_tr),
+                "validation_rows": len(df_va),
+                "WAPE_before": before,
+                "WAPE_after": after,
+                "RMSE_before": rmse_error(df_va["qb_ref"], df_va["qb_fast"]),
+                "RMSE_after": rmse_error(df_va["qb_ref"], df_va["qb_corrected"]),
+            }
+        )
+        print(f"    {group_col}={value}: WAPE {before:.3f}% -> {after:.3f}%")
+
+    if not rows or not parts:
+        print(f"  {strategy} skipped: no validation rows")
+        return None
+
+    pd.DataFrame(rows).to_csv(RESULTS_DIR / output_name, index=False)
+    all_va = pd.concat(parts, ignore_index=True)
+    return {
+        "strategy": strategy,
+        "folds": len(rows),
+        "WAPE_before": wape_error(all_va["qb_ref"], all_va["qb_fast"]),
+        "WAPE_after": wape_error(all_va["qb_ref"], all_va["qb_corrected"]),
+        "RMSE_before": rmse_error(all_va["qb_ref"], all_va["qb_fast"]),
+        "RMSE_after": rmse_error(all_va["qb_ref"], all_va["qb_corrected"]),
+        "n": len(all_va),
+    }
+
+
+def save_robustness_validations(df_train_pool: pd.DataFrame, full_df: pd.DataFrame, df_oof: pd.DataFrame):
+    summaries = [
+        {
+            "strategy": "grouped scenario OOF",
+            "folds": int(df_oof["validation_fold"].nunique()) if "validation_fold" in df_oof.columns else np.nan,
+            "WAPE_before": wape_error(df_oof["qb_ref"], df_oof["qb_fast"]),
+            "WAPE_after": wape_error(df_oof["qb_ref"], df_oof["qb_corrected"]),
+            "RMSE_before": rmse_error(df_oof["qb_ref"], df_oof["qb_fast"]),
+            "RMSE_after": rmse_error(df_oof["qb_ref"], df_oof["qb_corrected"]),
+            "n": len(df_oof),
+        }
+    ]
+    for group_col, strategy, output_name in [
+        ("geometry_id", "leave-one-geometry-out", "validation_leave_one_geometry.csv"),
+        ("D_m", "leave-one-diameter-out", "validation_leave_one_diameter.csv"),
+        ("penetration_m", "leave-one-penetration-out", "validation_leave_one_penetration.csv"),
+    ]:
+        summary = holdout_validation_summary(df_train_pool, full_df, "res_qb", group_col, strategy, output_name)
+        if summary:
+            summaries.append(summary)
+
+    df_summary = pd.DataFrame(summaries)
+    df_summary.to_csv(RESULTS_DIR / "validation_strategy_summary.csv", index=False)
+    plot_validation_strategy_summary(df_summary)
+    return df_summary
+
+
 def train_final(df_train: pd.DataFrame, target: str, tag: str):
     x_train = build_features(df_train).values
     y_train = df_train[target].values
@@ -269,6 +383,11 @@ def compute_and_save_normalisation(df_train: pd.DataFrame, meta_path: Path):
     meta["evaluation_depth_policy"] = (
         "Grouped out-of-fold validation evaluates complete scenario curves. "
         "The final saved model is trained on the full training pool."
+    )
+    meta["robustness_validation"] = (
+        "Full-version datasets additionally write leave-one-geometry-out, "
+        "leave-one-diameter-out, and leave-one-penetration-out summaries when "
+        "the required geometry columns are available."
     )
     meta["correction_damping_alpha"] = S_DAMPING_ALPHA
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -1113,6 +1232,41 @@ def plot_improvement_matrix(df_in: pd.DataFrame, model_qb):
     print(f"  Saved -> {out}")
 
 
+def plot_validation_strategy_summary(df_summary: pd.DataFrame):
+    if df_summary.empty:
+        return
+
+    labels = df_summary["strategy"].astype(str).tolist()
+    x = np.arange(len(labels))
+    width = 0.36
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.bar(x - width / 2, df_summary["WAPE_before"], width, label="Raw fast", color="#d6604d")
+    ax.bar(x + width / 2, df_summary["WAPE_after"], width, label="Corrected", color="#1b9e77")
+    ax.set_ylabel("WAPE [%]")
+    ax.set_title("Validation Strategy Comparison")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=20, ha="right")
+    ax.grid(axis="y", alpha=0.25)
+    ax.legend(frameon=False)
+
+    for xpos, before, after in zip(x, df_summary["WAPE_before"], df_summary["WAPE_after"]):
+        ax.text(
+            xpos,
+            max(before, after) * 1.02,
+            f"{before:.1f}->{after:.1f}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+
+    fig.tight_layout()
+    out = PLOTS_DIR / "validation_strategy_summary.png"
+    fig.savefig(out, dpi=300)
+    plt.close(fig)
+    print(f"  Saved -> {out}")
+
+
 def plot_correlation_matrix(df: pd.DataFrame, model_qb):
     feat = pd.DataFrame(index=df.index)
     feat["Density (ID)"] = df["ID"]
@@ -1121,6 +1275,15 @@ def plot_correlation_matrix(df: pd.DataFrame, model_qb):
     feat["Depth"] = df["depth"]
     feat["qb fast"] = df["qb_fast"]
     feat["qb fast grad"] = df["qb_fast_grad"] if "qb_fast_grad" in df.columns else 0.0
+    for column, label in [
+        ("D_m", "Diameter D"),
+        ("penetration_m", "Penetration"),
+        ("penetration_over_D", "Penetration/D"),
+        ("depth_over_D", "Depth/D"),
+        ("depth_over_penetration", "Depth/Penetration"),
+    ]:
+        if column in df.columns:
+            feat[label] = pd.to_numeric(df[column], errors="coerce")
     log_s = np.log10(df["S"].clip(lower=1))
     feat["S x Depth"] = log_s * df["depth"]
     feat["ID x Depth"] = df["ID"] * df["depth"]
@@ -1256,6 +1419,7 @@ def train_soil_model(run):
     df_oof.to_csv(RESULTS_DIR / "test_predictions.csv", index=False)
     save_metrics(df_oof)
     save_grouped_metrics(df_oof)
+    save_robustness_validations(df_train_pool, df, df_oof)
 
     plot_path = data_path.with_name("real_dataset_plot.csv")
     if plot_path.exists():
@@ -1294,7 +1458,7 @@ def main():
     parser = argparse.ArgumentParser(description="Train residual correction models from paired ML datasets.")
     parser.add_argument(
         "--soil-model",
-        choices=["all", "mcm", "mohr_coulomb", "hypoplastic"],
+        choices=["all", "both", "mcm", "mohr_coulomb", "hypoplastic"],
         default="all",
         help="'mohr_coulomb' is accepted as an alias for 'mcm'.",
     )

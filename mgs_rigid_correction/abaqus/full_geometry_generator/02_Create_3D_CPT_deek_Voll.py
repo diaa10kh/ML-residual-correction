@@ -12,7 +12,7 @@ except NameError:
 modellversion = 1;
 #
 
-modelname = 'CPT_' + str(GEOname) + STOFFname + '_rigid' + str(modellversion).zfill(1);
+modelname = 'CPT_' + str(GEOname) + STOFFname + '_deform' + str(modellversion).zfill(1);
 mdb.Model(name=modelname, modelType=STANDARD_EXPLICIT);
 mymodel = mdb.models[modelname];
 
@@ -36,6 +36,36 @@ else:
 
   
 
+#
+# ----------------------------------------------------
+## Create Presse 
+# ----------------------------------------------------
+#
+
+partitionsname = 'Presse';
+Zeichnung = mymodel.ConstrainedSketch('profil_' + partitionsname, sheetSize=20.0)
+Zeichnung.CircleByCenterPerimeter(center=(0.0, 0.0), point1=(0.0, PfahlRadius))           
+partPresse = mymodel.Part(name='Presse', dimensionality=THREE_D, type=DEFORMABLE_BODY)
+partPresse.BaseSolidExtrude(sketch=Zeichnung, depth=Step_length)
+del Zeichnung	
+RefCoordinates_Presse = (0.,0.,Step_length)
+partPresse.ReferencePoint(point=(RefCoordinates_Presse))
+
+
+	#### Sets creation #####
+partPresse = mymodel.parts['Presse']	
+rpid = partPresse.features['RP'].id;
+partPresse.Set(name='Presse_RP', referencePoints=(partPresse.referencePoints[rpid], ));
+partPresse.Set(name = 'Presse_All', cells= partPresse.cells); 
+
+
+Face = BedingteAuswahl(elemente=partPresse.faces, bedingung='(elem.pointOn[0][2] < var[0])', 
+   var=[abapys_tol]);
+partPresse.Set(name = 'Presse_Unten', faces= Face)
+    
+
+
+
 # ----------------------------------------------------
 # ----------------------------------------------------
 # Material Creation
@@ -49,7 +79,7 @@ mymodel.Material(name='Stahl');
 mymodel.materials['Stahl'].Density(table=((stahl_dichte, ), ));
 mymodel.materials['Stahl'].Elastic(table=((stahl_elastisch[0], stahl_elastisch[1]), ));
 mymodel.HomogeneousSolidSection(material='Stahl', name='Pile_Section', thickness=None);
-
+mymodel.HomogeneousSolidSection(material='Stahl', name='Presse_Section', thickness=None);
 
 verwendeteMaterialien = sorted(set(schichtmaterial));
 
@@ -112,7 +142,9 @@ partSoil.SectionAssignment(region=partSoil.sets['Soil_All'], sectionName='secEul
 partPile.SectionAssignment(offset=0.0, offsetField='', offsetType=MIDDLE_SURFACE,
    region=partPile.sets['Pile_All'], sectionName='Pile_Section', thicknessAssignment=FROM_SECTION);
 
-
+partPresse.SectionAssignment(offset=0.0, offsetField='', offsetType=MIDDLE_SURFACE,
+   region=partPresse.sets['Presse_All'], sectionName='Presse_Section', thicknessAssignment=FROM_SECTION);
+   
 #   
 # ----------------------------------------------------
 # ----------------------------------------------------
@@ -124,15 +156,16 @@ partPile.SectionAssignment(offset=0.0, offsetField='', offsetType=MIDDLE_SURFACE
 ## load Parts to the Assemply
 mymodel.rootAssembly.Instance(name='Pile-1', part=mymodel.parts['Pile'], dependent=ON)
 mymodel.rootAssembly.Instance(name='Soil-1', part=mymodel.parts['Soil'], dependent=ON)
-
+mymodel.rootAssembly.Instance(name='Presse-1', part=mymodel.parts['Presse'], dependent=ON)
 # mymodel.rootAssembly.Instance(name='Stone-1', part=mymodel.parts['Stone'], dependent=ON)
 
 
 
 
 mymodel.rootAssembly.translate(instanceList=('Pile-1',), vector=(0.0, 0.0, ModelTiefe - VoidHoehe)) #: translate Pile
+mymodel.rootAssembly.translate(instanceList=('Presse-1',), vector=(0.0, 0.0, ModelTiefe - VoidHoehe + PfahlLaenge)) #: translate Presse
 
-  
+
 # mymodel.rootAssembly.translate(instanceList=('Stone-1', ), vector=(0.0, 0.0, ModelTiefe - VoidHoehe - Stone_height)) #: translate Stone
 
 
@@ -202,7 +235,7 @@ mymodel.FieldOutputRequest(name='all-profil-vol',
 
 mymodel.HistoryOutputRequest(name='RF', 
     createStepName='Schwerkraft', variables=('RF1', 'RF2', 'RF3', 'U3'), 
-    timeInterval=history_time_interval, region=mymodel.rootAssembly.allInstances['Pile-1'].sets['Pile_RP'], sectionPoints=DEFAULT, 
+    timeInterval=history_time_interval, region=mymodel.rootAssembly.allInstances['Presse-1'].sets['Presse_RP'], sectionPoints=DEFAULT, 
     rebar=EXCLUDE)
 
 
@@ -286,7 +319,17 @@ if (Querschnitt == 'Viertel'):
         
 #
         
+if (Querschnitt == 'Halb'):
+    mymodel.DisplacementBC(name='Symmetrie_Pile', 
+        createStepName='Initial', region=mymodel.rootAssembly.instances['Pile-1'].sets['Pile_All'], u1=UNSET, u2=SET, u3=UNSET, 
+        ur1=SET, ur2=UNSET, ur3=SET, amplitude=UNSET, distributionType=UNIFORM, 
+        fieldName='', localCsys=None)
 
+if (Querschnitt == 'Viertel'):
+    mymodel.DisplacementBC(name='Symmetrie_Pile', 
+        createStepName='Initial', region=mymodel.rootAssembly.instances['Pile-1'].sets['Pile_All'], u1=SET, u2=SET, u3=UNSET, 
+        ur1=SET, ur2=SET, ur3=SET, amplitude=UNSET, distributionType=UNIFORM, 
+        fieldName='', localCsys=None)
         
  	
     ## Pile BC
@@ -298,24 +341,15 @@ mymodel.steps['Einpressen'].setValues(improvedDtMethod=ON)
 
     
 
-mymodel.DisplacementBC(name='Eindringen_Pile', 
-    createStepName='Initial', region=mymodel.rootAssembly.instances['Pile-1'].sets['Pile_RP'], u1=SET, u2=SET, u3=SET, ur1=SET, 
+mymodel.DisplacementBC(name='Eindringen_Presse', 
+    createStepName='Initial', region=mymodel.rootAssembly.instances['Presse-1'].sets['Presse_RP'], u1=SET, u2=SET, u3=SET, ur1=SET, 
     ur2=SET, ur3=SET, amplitude=UNSET, distributionType=UNIFORM, fieldName='', 
     localCsys=None)
-    
-
-mymodel.boundaryConditions['Eindringen_Pile'].setValuesInStep(
-    stepName='Schwerkraft', u3=FREED)  
-    
-mymodel.boundaryConditions['Eindringen_Pile'].setValuesInStep(
-    stepName='Einpressen', u3=-New_Einpress_Weg)
-
-
-mymodel.boundaryConditions['Eindringen_Pile'].setValuesInStep(
-    stepName='Einpressen', amplitude='Amp_Einpressen')
-
-
-
+if 'Vorbereiten' in mymodel.steps:
+    mymodel.boundaryConditions['Eindringen_Presse'].setValuesInStep(
+        stepName='Vorbereiten', u3=FREED)
+mymodel.boundaryConditions['Eindringen_Presse'].setValuesInStep(
+    stepName='Einpressen', u3=-New_Einpress_Weg, amplitude='Amp_Einpressen')
 
 
 	## Geostatic stress
@@ -326,19 +360,22 @@ mymodel.GeostaticStress(name='K0', region=region,
     
     
 
+region2=mymodel.rootAssembly.instances['Presse-1'].sets['Presse_All']
+region1=mymodel.rootAssembly.instances['Presse-1'].sets['Presse_RP']
+mymodel.RigidBody(name='Presse_rigid_body', refPointRegion=region1, bodyRegion=region2)
     
-region2=mymodel.rootAssembly.instances['Pile-1'].sets['Pile_All']
-region1=mymodel.rootAssembly.instances['Pile-1'].sets['Pile_RP']
-mymodel.RigidBody(name='Pile_rigid_body', refPointRegion=region1, bodyRegion=region2)
-
 
     
 # generate the pile mesh
 
 partPile.setMeshControls(regions=partPile.cells, technique=SWEEP)
-partPile.seedPart(size=0.15, deviationFactor=0.1, minSizeFactor=0.1)
+partPile.seedPart(size=Step_length, deviationFactor=0.1, minSizeFactor=0.1)
 partPile.generateMesh()	
 
+
+# generate the Presse mesh
+partPresse.seedPart(size=Step_length, deviationFactor=0.1, minSizeFactor=0.1)
+partPresse.generateMesh()	
 
 
     
@@ -429,6 +466,11 @@ def replace_SDV_with_SDV1(model):
 
 replace_SDV_with_SDV1(mymodel)
 
+
+def _case_bool(value):
+    return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
 if MGS_CASE_CONFIG:
     Scal = float(MGS_CASE_CONFIG.get('S', 1.0))
     if Scal <= 0.0:
@@ -438,7 +480,7 @@ if MGS_CASE_CONFIG:
     mymodel.materials['HYPO-VW96-Sand'].density.setValues(table=((density_value * Scal, ), ))
     mymodel.loads['Schwerkraft'].setValues(comp3=-g / Scal, distributionType=UNIFORM, field='')
     mdb.Job(activateLoadBalancing=False, atTime=None, contactPrint=OFF, 
-        description='Rigid-pile MGS run generated from case_config.json', echoPrint=OFF,
+        description='Full-version geometry MGS run generated from case_config.json', echoPrint=OFF,
         explicitPrecision=DOUBLE_PLUS_PACK, historyPrint=OFF, memory=90,
         memoryUnits=PERCENTAGE, model=modelname, modelPrint=OFF,
         multiprocessingMode=DEFAULT, name=run_job_name, nodalOutputPrecision=FULL,
@@ -446,64 +488,14 @@ if MGS_CASE_CONFIG:
         queue=None, resultsFormat=ODB, scratch='', type=ANALYSIS,
         userSubroutine=userroutineDatei, waitHours=0, waitMinutes=0);
     myjob = mdb.jobs[run_job_name];
+    if _case_bool(MGS_CASE_CONFIG.get('save_cae', False)):
+        cae_file = MGS_CASE_CONFIG.get('cae_file') or os.path.join(MGS_RUN_DIR, run_job_name + '.cae')
+        cae_dir = os.path.dirname(cae_file)
+        if cae_dir and not os.path.isdir(cae_dir):
+            os.makedirs(cae_dir)
+        _debug('Saving CAE file: %s' % cae_file)
+        mdb.saveAs(pathName=cae_file)
     myjob.writeInput(consistencyChecking=OFF);
     raise SystemExit(0)
 
 myjob.writeInput(consistencyChecking=OFF);
-
-
-
-# 
-# ----------------------------------------------------
-# Mass scaling Einpressen s = 10 
-# ----------------------------------------------------
-#
-
-# Scaling factor
-Scal = 10;
-
-mymodel.materials['HYPO-VW96-Sand'].density.setValues(table=((density_value*Scal, ), ))
-mymodel.loads['Schwerkraft'].setValues(comp3=-g/10, distributionType=UNIFORM, field='')
-
-  
-
-mdb.Job(activateLoadBalancing=False, atTime=None, contactPrint=OFF, 
-    description='', echoPrint=OFF, explicitPrecision=DOUBLE_PLUS_PACK, 
-    historyPrint=OFF, memory=90, memoryUnits=PERCENTAGE, model=mymodel, 
-    modelPrint=OFF, multiprocessingMode=DEFAULT, name=modelname+'_S10', 
-    nodalOutputPrecision=FULL, numCpus=4, numDomains=4, 
-    parallelizationMethodExplicit=DOMAIN, queue=None, resultsFormat=ODB, 
-    scratch='', type=ANALYSIS, userSubroutine=userroutineDatei, waitHours=0, waitMinutes=0);
-
-myjob = mdb.jobs[modelname+'_S10'];
-    
-myjob.writeInput(consistencyChecking=OFF);
-
-
-# 
-# ----------------------------------------------------
-# Mass scaling Einpressen s = 50
-# ----------------------------------------------------
-#
-
-# Scaling factor
-Scal = 50;
-
-mymodel.materials['HYPO-VW96-Sand'].density.setValues(table=((density_value*Scal, ), ))
-mymodel.loads['Schwerkraft'].setValues(comp3=-g/50, distributionType=UNIFORM, field='')
-
-  
-
-mdb.Job(activateLoadBalancing=False, atTime=None, contactPrint=OFF, 
-    description='', echoPrint=OFF, explicitPrecision=DOUBLE_PLUS_PACK, 
-    historyPrint=OFF, memory=90, memoryUnits=PERCENTAGE, model=mymodel, 
-    modelPrint=OFF, multiprocessingMode=DEFAULT, name=modelname+'_S50', 
-    nodalOutputPrecision=FULL, numCpus=4, numDomains=4, 
-    parallelizationMethodExplicit=DOMAIN, queue=None, resultsFormat=ODB, 
-    scratch='', type=ANALYSIS, userSubroutine=userroutineDatei, waitHours=0, waitMinutes=0);
-
-myjob = mdb.jobs[modelname+'_S50'];
-    
-myjob.writeInput(consistencyChecking=OFF);
-
-

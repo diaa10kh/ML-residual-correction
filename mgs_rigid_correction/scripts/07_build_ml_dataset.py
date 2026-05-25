@@ -11,7 +11,8 @@ hypoplastic runs:
           data/processed/ml/{mcm,hypoplastic}/dataset_meta.json
 
 The current Phase 0 grids are expected to contain 60 extracted CSVs per soil
-model: 4 densities x 3 velocities x 5 scaling factors.
+model. The full-version grids are metadata-driven and contain 540 planned
+runs per soil model.
 """
 
 from __future__ import annotations
@@ -38,7 +39,6 @@ RAW_DIR = DATA_ROOT / "extracted" / "per_run_csv"
 OUT_ROOT = DATA_ROOT / "processed" / "ml"
 
 S_REF = 1
-EXPECTED_CSV_COUNT = 60
 
 DENS_MAP = {"LOW": 0.30, "MED": 0.60, "REF": 0.80, "HIGH": 0.90}
 VPEN_MAP = {"LOW": 25.0, "REF": 50.0, "HIGH": 100.0}
@@ -52,15 +52,15 @@ SOIL_MODEL_RUNS = [
     {
         "name": "mcm",
         "label": "MCM",
-        "patterns": ["MC_*.csv"],
-        "metadata_path": DATA_ROOT / "extracted" / "run_metadata_phase0_mohr_coulomb.csv",
+        "patterns": ["MC_G*.csv"],
+        "metadata_path": DATA_ROOT / "extracted" / "run_metadata_full_mohr_coulomb.csv",
         "out_dir": OUT_ROOT / "mcm",
     },
     {
         "name": "hypoplastic",
         "label": "Hypoplastic",
-        "patterns": ["G0_*.csv"],
-        "metadata_path": DATA_ROOT / "extracted" / "run_metadata_phase0.csv",
+        "patterns": ["G*.csv"],
+        "metadata_path": DATA_ROOT / "extracted" / "run_metadata_full.csv",
         "out_dir": OUT_ROOT / "hypoplastic",
     },
 ]
@@ -69,7 +69,18 @@ SOIL_MODEL_RUNS = [
 def normalise_soil_model(value: str) -> str:
     if value == "mohr_coulomb":
         return "mcm"
+    if value == "both":
+        return "all"
     return value
+
+
+def as_float(value, default=np.nan):
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def smooth_curve(series, window: int):
@@ -202,6 +213,48 @@ def expected_csvs_from_metadata(metadata_path: Path):
     return expected
 
 
+def metadata_by_run_id(metadata_path: Path):
+    if not metadata_path.exists():
+        return {}
+
+    out = {}
+    with metadata_path.open("r", newline="", encoding="utf-8-sig") as handle:
+        for row in csv.DictReader(handle):
+            run_id = row.get("run_id", "")
+            if not run_id:
+                continue
+
+            D_m = as_float(row.get("D_m"))
+            L_m = as_float(row.get("L_m"))
+            penetration_m = as_float(row.get("penetration_m"))
+            if np.isnan(penetration_m) and not np.isnan(L_m):
+                penetration_m = 0.90 * L_m
+
+            ID_percent = as_float(row.get("ID_percent"))
+            velocity_m_per_s = as_float(row.get("velocity_m_per_s"))
+            out[run_id] = {
+                "scenario_id": row.get("scenario_id", ""),
+                "geometry_id": row.get("geometry_id", ""),
+                "density_id": row.get("density_id", ""),
+                "velocity_id": row.get("velocity_id", ""),
+                "ID": ID_percent / 100.0 if not np.isnan(ID_percent) else np.nan,
+                "v_pen": velocity_m_per_s * 100.0 if not np.isnan(velocity_m_per_s) else np.nan,
+                "D_m": D_m,
+                "L_m": L_m,
+                "L_over_D": as_float(row.get("L_over_D"), L_m / D_m if D_m else np.nan),
+                "penetration_m": penetration_m,
+                "penetration_over_D": as_float(
+                    row.get("penetration_over_D"),
+                    penetration_m / D_m if D_m else np.nan,
+                ),
+                "penetration_over_L": as_float(
+                    row.get("penetration_over_L"),
+                    penetration_m / L_m if L_m else np.nan,
+                ),
+            }
+    return out
+
+
 def validate_expected_csvs(run, allow_partial: bool):
     expected = expected_csvs_from_metadata(run["metadata_path"])
     label = run["label"]
@@ -212,16 +265,6 @@ def validate_expected_csvs(run, allow_partial: bool):
             print("WARNING: " + message)
             return
         raise SystemExit("ERROR: " + message)
-
-    if len(expected) != EXPECTED_CSV_COUNT:
-        message = (
-            f"{label}: metadata lists {len(expected)} runs; expected "
-            f"{EXPECTED_CSV_COUNT} for 4 x 3 x 5."
-        )
-        if allow_partial:
-            print("WARNING: " + message)
-        else:
-            raise SystemExit("ERROR: " + message)
 
     missing = [path for path in expected if not path.exists()]
     if not missing:
@@ -258,6 +301,7 @@ def build_dataset(run, allow_partial: bool = False):
 
     out_dir.mkdir(parents=True, exist_ok=True)
     validate_expected_csvs(run, allow_partial)
+    run_metadata = metadata_by_run_id(run["metadata_path"])
 
     all_files = discover_files(run["patterns"])
     if not all_files:
@@ -277,11 +321,18 @@ def build_dataset(run, allow_partial: bool = False):
         info = parse_filename(path)
         if info is None:
             continue
+        meta = run_metadata.get(info["run_id"])
+        if run_metadata and meta is None:
+            print(f"  WARNING: {path.name} is not listed in {run['metadata_path'].name}; skipping")
+            continue
+        if meta:
+            info.update(meta)
         info["path"] = path
         file_info.append(info)
         print(
             f"  {path.name} -> DENS={info['dens_level']} ({info['ID']}), "
-            f"V={info['v_level']} ({info['v_pen']}), S={info['S']}"
+            f"V={info['v_level']} ({info['v_pen']}), S={info['S']}, "
+            f"geometry={info.get('geometry_id', '')}"
         )
 
     if not file_info:
@@ -302,12 +353,13 @@ def build_dataset(run, allow_partial: bool = False):
         ref_path = ref_row.iloc[0]["path"]
         density = ref_row.iloc[0]["ID"]
         velocity = ref_row.iloc[0]["v_pen"]
+        geometry_id = ref_row.iloc[0].get("geometry_id", "")
 
         df_ref = pd.read_csv(ref_path)
         ref_grid = prepare_qb_curve(df_ref)
 
         print(f"\nScenario: {scenario_id}")
-        print(f"  ID={density}, v_pen={velocity}, ref rows={len(ref_grid)}")
+        print(f"  geometry={geometry_id}, ID={density}, v_pen={velocity}, ref rows={len(ref_grid)}")
 
         for _, fast_row in grp[grp["S"] != S_REF].iterrows():
             s_fast = fast_row["S"]
@@ -329,15 +381,33 @@ def build_dataset(run, allow_partial: bool = False):
             print(f"  S={s_fast}: {len(merged)} common depth points")
 
             for _, row in merged.iterrows():
+                depth = float(row["depth"])
+                D_m = as_float(fast_row.get("D_m"))
+                L_m = as_float(fast_row.get("L_m"))
+                penetration_m = as_float(fast_row.get("penetration_m"))
                 records.append(
                     {
                         "soil_model": run["name"],
                         "scenario_id": scenario_id,
                         "run_id": fast_row["run_id"],
+                        "geometry_id": fast_row.get("geometry_id", ""),
+                        "D_m": round(float(D_m), 6) if not np.isnan(D_m) else np.nan,
+                        "L_m": round(float(L_m), 6) if not np.isnan(L_m) else np.nan,
+                        "L_over_D": round(float(as_float(fast_row.get("L_over_D"))), 6),
+                        "penetration_m": round(float(penetration_m), 6) if not np.isnan(penetration_m) else np.nan,
+                        "penetration_over_D": round(float(as_float(fast_row.get("penetration_over_D"))), 6),
+                        "penetration_over_L": round(float(as_float(fast_row.get("penetration_over_L"))), 6),
                         "ID": density,
                         "v_pen": velocity,
                         "S": s_fast,
-                        "depth": round(float(row["depth"]), 6),
+                        "depth": round(depth, 6),
+                        "depth_over_D": round(depth / D_m, 6) if D_m and not np.isnan(D_m) else np.nan,
+                        "depth_over_L": round(depth / L_m, 6) if L_m and not np.isnan(L_m) else np.nan,
+                        "depth_over_penetration": (
+                            round(depth / penetration_m, 6)
+                            if penetration_m and not np.isnan(penetration_m)
+                            else np.nan
+                        ),
                         "qb_fast": round(float(row["qb_fast"]), 6),
                         "qb_fast_grad": round(float(row["qb_fast_grad"]), 6),
                         "qb_ref": round(float(row["qb_ref"]), 6),
@@ -387,7 +457,7 @@ def build_dataset(run, allow_partial: bool = False):
         "soil_model_label": label,
         "raw_dir": str(RAW_DIR),
         "metadata_path": str(run["metadata_path"]),
-        "expected_csv_count": EXPECTED_CSV_COUNT,
+        "expected_csv_count": len(expected_csvs_from_metadata(run["metadata_path"])),
         "observed_csv_count": len(all_files),
         "S_ref": S_REF,
         "density_values": [0.3, 0.6, 0.8, 0.9],
@@ -401,6 +471,14 @@ def build_dataset(run, allow_partial: bool = False):
         ),
         "outlier_std_thresh": OUTLIER_STD_THRESH,
         "gradient_window": GRADIENT_WINDOW,
+        "geometry_features_used_by_training": [
+            "D_m",
+            "penetration_m",
+            "penetration_over_D",
+            "depth_over_D",
+            "depth_over_penetration",
+        ],
+        "geometry_metadata_only": ["L_m", "L_over_D", "penetration_over_L", "depth_over_L"],
         "qb_preprocessing": (
             "Rows are sorted by positive depth, qb is smoothed with the moving "
             "average window, then smoothed non-positive qb values are removed."
@@ -437,7 +515,7 @@ def main():
     )
     parser.add_argument(
         "--soil-model",
-        choices=["all", "mcm", "mohr_coulomb", "hypoplastic"],
+        choices=["all", "both", "mcm", "mohr_coulomb", "hypoplastic"],
         default="all",
         help="'mohr_coulomb' is accepted as an alias for 'mcm'.",
     )

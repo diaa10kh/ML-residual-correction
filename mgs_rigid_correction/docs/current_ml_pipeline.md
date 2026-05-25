@@ -12,8 +12,10 @@ The ML model corrects high mass-scaling base resistance curves back toward the
 not used as an ML target or ML input feature because it is small, sensitive to
 local changes, and there is no matching centrifuge-test `q_s` correction target.
 
-The active simulations use a deformable steel volume-element pile patched from
-the checked Abaqus reference input. The historical folder name
+The full-version simulations are generated from the checked Abaqus reference
+input. For the CEL setup, the soil mesh/contact definitions are kept unchanged,
+while the pile and press coordinates, press displacement, timing, and
+material/scaling data are patched per metadata row. The historical folder name
 `mgs_rigid_correction` should not be read as a rigid-pile modelling assumption.
 
 For each high-S curve, the target residual is:
@@ -51,11 +53,15 @@ real_dataset_plot.csv
 dataset_meta.json
 ```
 
-The current Phase 0 matrix expects 60 CSV files per soil model:
+The full-version matrix expects 540 CSV files per soil model:
 
 ```text
-4 densities x 3 velocities x 5 scaling factors = 60
+9 geometries x 4 densities x 3 velocities x 5 scaling factors = 540
 ```
+
+The dataset builder is metadata-driven. It reads the planned geometry and run
+information from `run_metadata_full.csv` for hypoplastic runs and
+`run_metadata_full_mohr_coulomb.csv` for MCM runs.
 
 The builder pairs each high-S run (`S=10, 30, 50, 100`) with the matching
 `S=1` reference using `scenario_id`. It uses exact depth matching, keeps the
@@ -74,16 +80,28 @@ S
 depth
 qb_fast
 qb_fast_grad
+D_m
+penetration_m
+penetration_over_D
+depth_over_D
+depth_over_penetration
 S_x_depth
 ID_x_depth
 S_x_ID
 v_x_S
 grad_x_S
 grad_x_ID
+S_x_depth_over_D
+S_x_penetration_over_D
 ```
 
 The `S=1` response is not used as an input feature. It is used only to compute
 the residual target.
+
+`L_m`, `L_over_D`, `penetration_over_L`, and `depth_over_L` are retained as
+metadata/diagnostic values. They are not core ML features in the full-version
+model because pile length is linked to the selected penetration depth through
+`penetration/L = 0.90`.
 
 The first meter is included in training. The dataset still keeps the
 `is_shallow` flag for inspection, but the current trainer uses the complete
@@ -144,6 +162,19 @@ v  = 25, 50, 100 cm/s
 
 Additional grouped breakdowns are written to `metrics_by_group.csv`, and the
 per-fold scenario metrics are written to `validation_folds.csv`.
+
+For full-version datasets, the trainer also writes stricter robustness checks:
+
+```text
+validation_strategy_summary.csv
+validation_leave_one_geometry.csv
+validation_leave_one_diameter.csv
+validation_leave_one_penetration.csv
+```
+
+Grouped scenario out-of-fold validation remains the main publication
+performance evidence. The geometry, diameter, and penetration holdouts are
+robustness checks for stronger extrapolation claims.
 
 `oof_predictions.csv` is the preferred source for validation plots. It is the
 same grouped out-of-fold prediction table that is also written as

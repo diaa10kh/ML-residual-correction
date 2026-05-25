@@ -1,6 +1,7 @@
 {
-  "phase": "full",
-  "soil_model": "Hypoplastisch",
+  "phase": "full_mohr_coulomb",
+  "soil_model": "Mohr-Coulomb",
+  "run_id_prefix": "MC",
   "geometry_label_mode": "dimensions",
   "reference_velocity_m_per_s": 0.5,
   "penetration_eta_max": 0.90,
@@ -14,6 +15,44 @@
       "soil_void": 0.615854,
       "upper_layer": 0.615854,
       "down_layer": 0.55
+    }
+  },
+  "mohr_coulomb": {
+    "DENS_LOW": {
+      "rho": 1.64,
+      "E": 20000,
+      "nu": 0.25,
+      "phi": 27.0,
+      "psi": 5.0,
+      "c": 0.1,
+      "plastic_strain": 0.0
+    },
+    "DENS_MED": {
+      "rho": 1.64,
+      "E": 25000,
+      "nu": 0.25,
+      "phi": 29.0,
+      "psi": 7.0,
+      "c": 0.1,
+      "plastic_strain": 0.0
+    },
+    "DENS_REF": {
+      "rho": 1.64,
+      "E": 30000,
+      "nu": 0.25,
+      "phi": 31.5,
+      "psi": 10.0,
+      "c": 0.1,
+      "plastic_strain": 0.0
+    },
+    "DENS_HIGH": {
+      "rho": 1.64,
+      "E": 40000,
+      "nu": 0.25,
+      "phi": 34.0,
+      "psi": 12.0,
+      "c": 0.1,
+      "plastic_strain": 0.0
     }
   },
   "eta_grid": {
@@ -90,22 +129,22 @@
     {
       "density_id": "DENS_LOW",
       "ID_percent": 30,
-      "purpose": "loose state"
+      "purpose": "loose Mohr-Coulomb parameter set"
     },
     {
       "density_id": "DENS_MED",
       "ID_percent": 60,
-      "purpose": "medium dense state"
+      "purpose": "medium dense Mohr-Coulomb parameter set"
     },
     {
       "density_id": "DENS_REF",
       "ID_percent": 80,
-      "purpose": "reference density from e0 = 0.55 with e_min = 0.49 and e_max = 0.76"
+      "purpose": "reference Mohr-Coulomb fit to experiments"
     },
     {
       "density_id": "DENS_HIGH",
       "ID_percent": 90,
-      "purpose": "very dense state"
+      "purpose": "very dense Mohr-Coulomb parameter set"
     }
   ],
   "velocities": [

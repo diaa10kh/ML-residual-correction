@@ -13,6 +13,9 @@ from mgs_common import as_float, mkdir_p, project_path, read_csv, resolve_projec
 
 SOIL_BASE_DENSITY = 1.64
 STEEL_BASE_DENSITY = 7.8
+REFERENCE_D_M = 0.60
+REFERENCE_L_M = 12.0
+REFERENCE_PILE_INSTANCE_Z = 27.0
 
 
 def abaqus_number(value):
@@ -20,6 +23,23 @@ def abaqus_number(value):
     if abs(value - round(value)) < 1.0e-12:
         return "%d." % int(round(value))
     return "%.12g" % value
+
+
+def format_node(node_id, x, y, z):
+    return "%7d, %16s, %16s, %16s\n" % (
+        int(node_id),
+        abaqus_number(x),
+        abaqus_number(y),
+        abaqus_number(z),
+    )
+
+
+def is_keyword(line):
+    return line.lstrip().startswith("*")
+
+
+def split_data_line(line):
+    return [part.strip() for part in line.split(",")]
 
 
 def set_next_data_line(lines, keyword_index, new_line):
@@ -45,6 +65,85 @@ def find_line(lines, predicate, start=0, stop=None):
 def find_keyword(lines, keyword, start=0, stop=None):
     key = keyword.lower()
     return find_line(lines, lambda line: line.strip().lower() == key, start, stop)
+
+
+def patch_part_nodes(lines, part_name, radius_scale, z_scale=1.0):
+    in_part = False
+    in_nodes = False
+    part_marker = "name=%s" % part_name.lower()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        lower = stripped.lower()
+        if lower.startswith("*part") and part_marker in lower:
+            in_part = True
+            in_nodes = False
+            continue
+        if in_part and lower.startswith("*end part"):
+            in_part = False
+            in_nodes = False
+            continue
+        if in_part and lower.startswith("*node"):
+            in_nodes = True
+            continue
+        if in_part and in_nodes and is_keyword(line):
+            in_nodes = False
+            continue
+        if in_part and in_nodes and stripped and not stripped.startswith("**"):
+            parts = split_data_line(line)
+            if len(parts) >= 4:
+                x = float(parts[1]) * radius_scale
+                y = float(parts[2]) * radius_scale
+                z = float(parts[3]) * z_scale
+                lines[index] = format_node(parts[0], x, y, z)
+
+
+def patch_instance_translation(lines, instance_name, z_value):
+    waiting_for_translation = False
+    marker = "*instance, name=%s" % instance_name.lower()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        lower = stripped.lower()
+        if lower.startswith(marker):
+            waiting_for_translation = True
+            continue
+        if waiting_for_translation:
+            if stripped and not is_keyword(line):
+                lines[index] = "          0.,           0.,          %s\n" % abaqus_number(z_value)
+                return
+            if is_keyword(line):
+                return
+    raise RuntimeError("Instance translation not found for %s" % instance_name)
+
+
+def patch_press_displacement(lines, row):
+    penetration = as_float(row["penetration_m"])
+    step_index = find_keyword(lines, "*Step, name=Einpressen, nlgeom=YES")
+    if step_index < 0:
+        raise RuntimeError("Einpressen step not found")
+    end_index = find_keyword(lines, "*End Step", step_index)
+    if end_index < 0:
+        raise RuntimeError("Einpressen end step not found")
+    index = find_line(
+        lines,
+        lambda line: line.strip().lower().startswith("presse-1.presse_rp, 3, 3"),
+        step_index,
+        end_index,
+    )
+    if index < 0:
+        raise RuntimeError("Einpressen press displacement line not found")
+    lines[index] = "Presse-1.Presse_RP, 3, 3, -%s\n" % abaqus_number(penetration)
+
+
+def patch_pile_and_press_geometry(lines, row):
+    D_m = as_float(row.get("D_m"), REFERENCE_D_M)
+    L_m = as_float(row.get("L_m"), REFERENCE_L_M)
+    radius_scale = D_m / REFERENCE_D_M
+    length_scale = L_m / REFERENCE_L_M
+    patch_part_nodes(lines, "Pile", radius_scale=radius_scale, z_scale=length_scale)
+    patch_part_nodes(lines, "Presse", radius_scale=radius_scale, z_scale=1.0)
+    patch_instance_translation(lines, "Pile-1", REFERENCE_PILE_INSTANCE_Z)
+    patch_instance_translation(lines, "Presse-1", REFERENCE_PILE_INSTANCE_Z + L_m)
+    patch_press_displacement(lines, row)
 
 
 def material_block_bounds(lines, material_name):
@@ -268,6 +367,7 @@ def patch_common_template(lines, row):
 def patch_template(template_lines, row):
     lines = list(template_lines)
     soil_model = row.get("soil_model", "")
+    patch_pile_and_press_geometry(lines, row)
     if soil_model == "Mohr-Coulomb":
         patch_mc_soil_material(lines, row)
     elif soil_model == "Hypoplastisch":
@@ -351,7 +451,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Create Abaqus .inp files by patching a checked reference input file."
     )
-    parser.add_argument("--metadata", default=project_path("data", "extracted", "run_metadata_phase0.csv"))
+    parser.add_argument("--metadata", default=project_path("data", "extracted", "run_metadata_full.csv"))
     parser.add_argument(
         "--reference-inp",
         default=project_path("reference_inputs", "CPT_90_MCM_einpressen_Voll_S001.inp"),

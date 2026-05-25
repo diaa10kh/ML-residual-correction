@@ -1,20 +1,26 @@
 # On-Hold Material
 
-This folder contains material that is intentionally not part of the active
-simplified workflow.
+This folder contains material that is intentionally not part of the simplified
+Phase 0 reference-input workflow.
 
-## complex_abaqus_generator
+## moved full geometry generator
 
-The previous Abaqus/CAE model-building input generator is preserved here for
-later work. The active workflow now creates Abaqus input files by patching the
-checked reference input file with:
+The Abaqus/CAE model-building input generator has moved into the active Abaqus
+folder:
+
+```text
+../abaqus/full_geometry_generator/
+```
+
+The simplified Phase 0 workflow still creates Abaqus input files by patching
+the checked reference input file with:
 
 ```powershell
 python scripts\02_generate_inputs_from_reference.py
 ```
 
-Use the complex generator only when the project returns to full model
-construction from Abaqus Python scripts.
+Use the moved generator only after the Abaqus Python model has been checked and
+edited for the intended deformable-pile setup.
 
 ## training_legacy.yaml
 

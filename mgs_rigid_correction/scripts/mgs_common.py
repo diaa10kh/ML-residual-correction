@@ -18,10 +18,13 @@ STATIC_FEATURES = [
     "D_m",
     "L_m",
     "L_over_D",
+    "penetration_m",
+    "penetration_over_D",
     "velocity_m_per_s",
     "v_over_v0",
     "eta",
     "z_over_D",
+    "z_over_penetration",
     "z_m",
 ]
 
@@ -161,6 +164,14 @@ def s_label(value):
     return "S%03d" % as_int(value)
 
 
+def geometry_label(geometry_id, D_m, penetration_m, mode):
+    if mode != "dimensions":
+        return geometry_id
+    D_cm = int(round(100.0 * D_m))
+    penetration_dm = int(round(10.0 * penetration_m))
+    return "%s_D%03d_P%03d" % (geometry_id, D_cm, penetration_dm)
+
+
 def void_ratio_from_relative_density(ID_percent, e_min, e_max):
     """Invert the density-based relative-density formula used in the legacy notes.
 
@@ -265,6 +276,8 @@ def row_to_jsonable(row):
 
 def expand_matrix(config):
     reference_velocity = as_float(config.get("reference_velocity_m_per_s"), 0.5)
+    penetration_eta_max = as_float(config.get("penetration_eta_max"), 0.90)
+    geometry_label_mode = to_str(config.get("geometry_label_mode", "id"))
     phase = to_str(config.get("phase", "matrix"))
     soil_model = to_str(config.get("soil_model", "Hypoplastisch"))
     run_id_prefix = to_str(config.get("run_id_prefix", "")).strip("_")
@@ -272,15 +285,23 @@ def expand_matrix(config):
     for geometry in config.get("geometries", []):
         geometry_id = to_str(geometry["geometry_id"])
         D_m = as_float(geometry["D_m"])
-        L_m = as_float(geometry["L_m"])
+        penetration_m = as_float(geometry.get("penetration_m"), None)
+        if penetration_m is None:
+            L_m = as_float(geometry["L_m"])
+            penetration_m = penetration_eta_max * L_m
+        else:
+            L_m = as_float(geometry.get("L_m"), penetration_m / penetration_eta_max)
         L_over_D = as_float(geometry.get("L_over_D"), L_m / D_m)
+        penetration_over_D = penetration_m / D_m
+        penetration_over_L = penetration_m / L_m
+        scenario_geometry_id = geometry_label(geometry_id, D_m, penetration_m, geometry_label_mode)
         for density in config.get("densities", []):
             density_id = to_str(density["density_id"])
             ID_percent = as_float(density["ID_percent"])
             for velocity in config.get("velocities", []):
                 velocity_id = to_str(velocity["velocity_id"])
                 velocity_m_per_s = as_float(velocity["velocity_m_per_s"])
-                base_scenario_id = "%s_%s_%s" % (geometry_id, density_id, velocity_id)
+                base_scenario_id = "%s_%s_%s" % (scenario_geometry_id, density_id, velocity_id)
                 if run_id_prefix:
                     scenario_id = "%s_%s" % (run_id_prefix, base_scenario_id)
                 else:
@@ -304,6 +325,9 @@ def expand_matrix(config):
                             "D_m": "%.12g" % D_m,
                             "L_m": "%.12g" % L_m,
                             "L_over_D": "%.12g" % L_over_D,
+                            "penetration_m": "%.12g" % penetration_m,
+                            "penetration_over_D": "%.12g" % penetration_over_D,
+                            "penetration_over_L": "%.12g" % penetration_over_L,
                             "ID_percent": "%.12g" % ID_percent,
                             "velocity_m_per_s": "%.12g" % velocity_m_per_s,
                             "v_over_v0": "%.12g" % (velocity_m_per_s / reference_velocity),
@@ -327,7 +351,6 @@ def expand_matrix(config):
                             "void_ratio_soil_void": void_ratios["void_ratio_soil_void"],
                             "void_ratio_upper_layer": void_ratios["void_ratio_upper_layer"],
                             "void_ratio_down_layer": void_ratios["void_ratio_down_layer"],
-                            "penetration_m": "%.12g" % (as_float(config.get("penetration_eta_max"), 0.90) * L_m),
                             "symmetry_factor": str(as_int(config.get("symmetry_factor"), 4)),
                             "run_dir": run_dir,
                             "input_file": os.path.join(run_dir, run_id + ".inp"),
@@ -551,10 +574,14 @@ def add_curve_features(rows):
         for i, row in enumerate(group):
             D_m = safe_float(row.get("D_m"))
             L_m = safe_float(row.get("L_m"))
+            penetration_m = safe_float(row.get("penetration_m"))
+            if not is_finite(penetration_m) and is_finite(L_m):
+                penetration_m = 0.90 * L_m
             z_m = safe_float(row.get("z_m"))
             S = max(safe_float(row.get("S"), 1.0), 1.0)
             row["logS"] = "%.12g" % math.log(S)
             row["z_over_D"] = "%.12g" % (z_m / max(D_m, EPS))
+            row["z_over_penetration"] = "%.12g" % (z_m / max(penetration_m, EPS))
             row["dqb_deta"] = "%.12g" % dqb[i]
             row["dqs_deta"] = "%.12g" % dqs[i]
             row["qb_movmean_5"] = "%.12g" % qb_movmean[i]

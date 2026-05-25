@@ -37,9 +37,6 @@ partPile.Set(name = 'spitzendruck', faces= spitzendruck);
 partPile.Surface(name = 'spitzendruck', side1Faces= spitzendruck); 
 
   
-RefCoordinates_Pile = (0.,0.,PfahlLaenge)
-partPile.ReferencePoint(point=(RefCoordinates_Pile))
-
 
 
     ### create the cuts in the Pile#####
@@ -65,11 +62,6 @@ XZDatum = partPile.DatumPlaneByPrincipalPlane(principalPlane=XZPLANE, offset=0)
 partPile.PartitionCellByDatumPlane(datumPlane=partPile.datums[XZDatum.id], cells=partPile.cells)      
 YZDatum = partPile.DatumPlaneByPrincipalPlane(principalPlane=YZPLANE, offset=0)	 
 partPile.PartitionCellByDatumPlane(datumPlane=partPile.datums[YZDatum.id], cells=partPile.cells)   
-
-	#### Sets creation #####
-
-rpid = partPile.features['RP'].id;
-partPile.Set(name='Pile_RP', referencePoints=(partPile.referencePoints[rpid], ));
 
 
 #

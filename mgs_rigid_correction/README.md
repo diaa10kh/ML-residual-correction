@@ -1,8 +1,10 @@
 # Deformable-Pile MGS Residual Correction Workflow
 
-This folder is the active workflow. It generates Abaqus input files from one
-checked reference input file, runs the simulations on the cluster, extracts ODB
-curves, and trains a residual correction model.
+This folder is the active workflow. The simplified Phase 0 path generates
+Abaqus input files from one checked reference input file, while the full-version
+geometry path prepares Abaqus/CAE model-building cases so pile diameter and
+model dimensions can change. Both paths then run simulations on the cluster,
+extract ODB curves, and train a residual correction model.
 
 Important modelling note: despite the historical folder name
 `mgs_rigid_correction`, the active simplified simulations use a deformable steel
@@ -30,6 +32,7 @@ environment, use the repository virtual environment explicitly:
 configs/                              matrix definitions
 reference_inputs/CPT_90_MCM_...inp    checked Mohr-Coulomb reference input
 abaqus/vumat-hypo-2020-hst.for        VUMAT for hypoplastic runs
+abaqus/full_geometry_generator/       full-version Abaqus model builder
 scripts/01_generate_matrix.py         write run metadata
 scripts/02_generate_inputs_from_reference.py
 scripts/03_submit_slurm_array.sh      remote SLURM array script
@@ -40,12 +43,66 @@ scripts/07_build_ml_dataset.py        build paired residual datasets
 scripts/08_train_correction_model.py  train model and plots
 ```
 
-The old Abaqus/CAE model-building generator is not active. It is kept for later
-under:
+The Abaqus/CAE model-building generator is not used for the simplified Phase 0
+reference-input workflow. The `full-version` geometry workflow uses it because
+the reference `.inp` patcher cannot change pile diameter and model dimensions.
+It is kept under:
 
 ```text
-on_hold/complex_abaqus_generator/
+abaqus/full_geometry_generator/
 ```
+
+## Quick Start: Full-Version Geometry Metadata
+
+The full-version matrix plans 540 runs per soil model:
+
+```text
+9 geometries x 4 densities x 3 velocities x 5 scaling factors = 540
+```
+
+Generate hypoplastic metadata only:
+
+```powershell
+python scripts\01_generate_matrix.py --soil-model hypoplastic
+```
+
+Generate MCM metadata only:
+
+```powershell
+python scripts\01_generate_matrix.py --soil-model mcm
+```
+
+Generate both metadata files:
+
+```powershell
+python scripts\01_generate_matrix.py --soil-model both
+```
+
+The full-version metadata files are:
+
+```text
+data/extracted/run_metadata_full.csv
+data/extracted/run_metadata_full_mohr_coulomb.csv
+```
+
+Generate the 540 hypoplastic `.inp` files from the checked reference input:
+
+```powershell
+python scripts\02_generate_inputs_from_reference.py --metadata data\extracted\run_metadata_full.csv --soil-model Hypoplastisch --clean
+```
+
+The full-version run names include the geometry dimensions. For example,
+`G5_D060_P110_DENS_HIGH_V_LOW_S001` means geometry `G5`, `D=0.60 m`,
+`penetration=11.0 m`, high density, low velocity, and `S=1`.
+
+The full-version geometry design varies pile diameter and capped penetration
+depth. Pile length is linked to penetration through `penetration/L = 0.90`, so
+`L_m`, `L_over_D`, and `penetration_over_L` are metadata/diagnostic values, not
+independent geometry effects.
+
+The direct reference-input patcher changes only the pile and press coordinates,
+press displacement, timing, and material/scaling data. The CEL soil mesh and
+contact definitions are copied unchanged.
 
 ## Quick Start: Phase 0 Hypoplastic
 
@@ -126,6 +183,18 @@ After `.inp` files exist, submit from WSL:
 bash scripts/12_cluster_transfer_submit_fetch.sh submit_all
 ```
 
+On the full-version branch this submits the 540 hypoplastic inputs listed in:
+
+```text
+data/extracted/run_metadata_full.csv
+```
+
+to the default remote folder:
+
+```text
+/work/gbt/$USER/MGS_Rigid_Correction/FULL_HYPO
+```
+
 By default the helper submits the full job array without an artificial task
 limit. To add a throttle intentionally, set `MGS_ARRAY_THROTTLE`, for example:
 
@@ -184,17 +253,17 @@ The moving-average and `q_s` axis limits are set near the top of the script.
 The current defaults are 20 points for MCM and 30 points for hypoplastic.
 
 `07_build_ml_dataset.py` validates the extracted CSV files against the metadata
-matrix. For the current Phase 0 matrix it expects 60 extracted CSVs per soil
-model. It stops if files are missing, so stale partial results are not trained
-by accident. For an exploratory partial-data build only, add:
+matrix. On the full-version branch it expects the metadata-driven full matrix
+by default: 540 extracted CSVs per soil model. It stops if files are missing,
+so stale partial results are not trained by accident. For an exploratory
+partial-data build only, add:
 
 ```powershell
 python scripts\07_build_ml_dataset.py --allow-partial
 ```
 
-Both ML scripts also accept `--soil-model mcm` or `--soil-model hypoplastic`
-when only one branch should be rebuilt. The name `mohr_coulomb` is accepted as
-an alias for `mcm`.
+Both ML scripts also accept `--soil-model mcm`, `--soil-model hypoplastic`, or
+`--soil-model both`. The name `mohr_coulomb` is accepted as an alias for `mcm`.
 
 `07_build_ml_dataset.py` expects per-run CSV files in:
 
@@ -337,10 +406,11 @@ to the deformable steel pile material. The gravity scaling is applied to the
 soil gravity load. The pile remains a deformable volume-element pile; it is not
 converted into a rigid body by the simplified workflow.
 
-The matrix currently uses four relative-density levels (`ID=0.3, 0.6, 0.8,
-0.9`), three penetration velocities (`0.25, 0.50, 1.00 m/s`, equivalent to
-`25, 50, 100 cm/s`), and five scaling factors (`1, 10, 30, 50, 100`). That is
-`4 x 3 x 5 = 60` simulations per geometry and soil model.
+The full-version matrix uses nine diameter/penetration geometries, four
+relative-density levels (`ID=0.3, 0.6, 0.8, 0.9`), three penetration velocities
+(`0.25, 0.50, 1.00 m/s`, equivalent to `25, 50, 100 cm/s`), and five scaling
+factors (`1, 10, 30, 50, 100`). That is
+`9 x 4 x 3 x 5 = 540` simulations per soil model.
 
 Field output is intentionally sparse to reduce ODB size. The generated
 `Einpressen` step uses:

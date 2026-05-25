@@ -30,11 +30,14 @@ on grouped out-of-fold predictions by complete density-velocity scenario. The
 saved final model is the deployable artifact; final-model curve plots are
 diagnostics, not validation evidence.
 
-The active input-generation path patches a checked reference Abaqus `.inp`
-file. The previous Abaqus/CAE model-building generator is preserved under:
+The full-version input-generation path patches the checked reference Abaqus
+`.inp` file. For the CEL setup, the soil mesh/contact definitions remain
+unchanged while pile and press coordinates are updated for each geometry. The
+Abaqus/CAE model-building generator remains available for later deeper geometry
+work:
 
 ```text
-mgs_rigid_correction/on_hold/complex_abaqus_generator/
+mgs_rigid_correction/abaqus/full_geometry_generator/
 ```
 
 Generated Abaqus runs, extracted curves, processed datasets, trained models,
