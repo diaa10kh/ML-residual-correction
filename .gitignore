@@ -39,6 +39,12 @@ mgs_rigid_correction/results/
 mgs_rigid_correction/_generated_artifacts_backup/
 mgs_rigid_correction/.codex_cluster_bridge/
 
+# Versioned CSV datasets/results
+!mgs_rigid_correction/data/
+!mgs_rigid_correction/data/**/
+mgs_rigid_correction/data/**/*.*
+!mgs_rigid_correction/data/**/*.csv
+
 # Local environment files
 .env
 .venv/
