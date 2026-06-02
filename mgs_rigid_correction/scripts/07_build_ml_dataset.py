@@ -5,14 +5,13 @@ This is the repository-adapted version of the student dataset pipeline.  It
 keeps the repo input layout, but writes separate outputs for MCM and
 hypoplastic runs:
 
-  Input:  data/extracted/per_run_csv/{run_id}.csv
+  Input:  data/extracted/per_run_csv/{mcm,hypoplastic}/{run_id}.csv
   Output: data/processed/ml/{mcm,hypoplastic}/real_dataset.csv
           data/processed/ml/{mcm,hypoplastic}/real_dataset_plot.csv
           data/processed/ml/{mcm,hypoplastic}/dataset_meta.json
 
-The current Phase 0 grids are expected to contain 60 extracted CSVs per soil
-model. The full-version grids are metadata-driven and contain 540 planned
-runs per soil model.
+The active grids are metadata-driven and contain 180 planned runs per
+soil model.
 """
 
 from __future__ import annotations
@@ -38,7 +37,7 @@ DATA_ROOT = PROJECT_ROOT / "data"
 RAW_DIR = DATA_ROOT / "extracted" / "per_run_csv"
 OUT_ROOT = DATA_ROOT / "processed" / "ml"
 
-S_REF = 1
+DEFAULT_S_REF = 3
 
 DENS_MAP = {"LOW": 0.30, "MED": 0.60, "REF": 0.80, "HIGH": 0.90}
 VPEN_MAP = {"LOW": 25.0, "REF": 50.0, "HIGH": 100.0}
@@ -52,6 +51,7 @@ SOIL_MODEL_RUNS = [
     {
         "name": "mcm",
         "label": "MCM",
+        "raw_dir": RAW_DIR / "mcm",
         "patterns": ["MC_G*.csv"],
         "metadata_path": DATA_ROOT / "extracted" / "run_metadata_full_mohr_coulomb.csv",
         "out_dir": OUT_ROOT / "mcm",
@@ -59,6 +59,7 @@ SOIL_MODEL_RUNS = [
     {
         "name": "hypoplastic",
         "label": "Hypoplastic",
+        "raw_dir": RAW_DIR / "hypoplastic",
         "patterns": ["G*.csv"],
         "metadata_path": DATA_ROOT / "extracted" / "run_metadata_full.csv",
         "out_dir": OUT_ROOT / "hypoplastic",
@@ -81,6 +82,15 @@ def as_float(value, default=np.nan):
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def reference_s_from_metadata(metadata: dict) -> int:
+    values = []
+    for info in metadata.values():
+        s_value = as_float(info.get("S"))
+        if not np.isnan(s_value):
+            values.append(int(s_value))
+    return min(values) if values else DEFAULT_S_REF
 
 
 def smooth_curve(series, window: int):
@@ -200,7 +210,8 @@ def prepare_qb_curve(df: pd.DataFrame) -> pd.DataFrame:
     return grid
 
 
-def expected_csvs_from_metadata(metadata_path: Path):
+def expected_csvs_from_metadata(run):
+    metadata_path = run["metadata_path"]
     if not metadata_path.exists():
         return []
 
@@ -209,8 +220,15 @@ def expected_csvs_from_metadata(metadata_path: Path):
         for row in csv.DictReader(handle):
             run_id = row.get("run_id", "")
             if run_id:
-                expected.append(RAW_DIR / f"{run_id}.csv")
+                expected.append(run["raw_dir"] / f"{run_id}.csv")
     return expected
+
+
+def discovered_csv_count(run):
+    count = 0
+    for pattern in run["patterns"]:
+        count += len(list(run["raw_dir"].glob(pattern)))
+    return count
 
 
 def metadata_by_run_id(metadata_path: Path):
@@ -237,6 +255,7 @@ def metadata_by_run_id(metadata_path: Path):
                 "geometry_id": row.get("geometry_id", ""),
                 "density_id": row.get("density_id", ""),
                 "velocity_id": row.get("velocity_id", ""),
+                "S": int(as_float(row.get("S"), DEFAULT_S_REF)),
                 "ID": ID_percent / 100.0 if not np.isnan(ID_percent) else np.nan,
                 "v_pen": velocity_m_per_s * 100.0 if not np.isnan(velocity_m_per_s) else np.nan,
                 "D_m": D_m,
@@ -256,7 +275,7 @@ def metadata_by_run_id(metadata_path: Path):
 
 
 def validate_expected_csvs(run, allow_partial: bool):
-    expected = expected_csvs_from_metadata(run["metadata_path"])
+    expected = expected_csvs_from_metadata(run)
     label = run["label"]
 
     if not expected:
@@ -285,10 +304,14 @@ def validate_expected_csvs(run, allow_partial: bool):
         print(f"  ... {len(missing) - 10} more missing file(s)")
 
 
-def discover_files(patterns):
+def discover_files(run):
+    expected = expected_csvs_from_metadata(run)
+    if expected:
+        return [path for path in expected if path.exists()]
+
     files = []
-    for pattern in patterns:
-        files.extend(RAW_DIR.glob(pattern))
+    for pattern in run["patterns"]:
+        files.extend(run["raw_dir"].glob(pattern))
     return sorted(set(files))
 
 
@@ -303,18 +326,21 @@ def build_dataset(run, allow_partial: bool = False):
     validate_expected_csvs(run, allow_partial)
     run_metadata = metadata_by_run_id(run["metadata_path"])
 
-    all_files = discover_files(run["patterns"])
+    all_files = discover_files(run)
     if not all_files:
-        print(f"ERROR: no CSV files found in {RAW_DIR}")
+        print(f"ERROR: no CSV files found in {run['raw_dir']}")
         print(f"Patterns: {run['patterns']}")
         return None
 
     print("")
     print("=" * 60)
     print(f"Building dataset for {label}")
-    print(f"RAW:    {RAW_DIR}")
+    print(f"RAW:    {run['raw_dir']}")
     print(f"OUTPUT: {out_dir}")
     print(f"Found {len(all_files)} CSV files")
+    ignored = discovered_csv_count(run) - len(all_files)
+    if ignored > 0:
+        print(f"Ignoring {ignored} CSV file(s) not listed in {run['metadata_path'].name}")
 
     file_info = []
     for path in all_files:
@@ -340,14 +366,16 @@ def build_dataset(run, allow_partial: bool = False):
         return None
 
     df_info = pd.DataFrame(file_info)
+    s_ref = reference_s_from_metadata(run_metadata)
     scenarios = df_info.groupby("scenario_id")
     print(f"\nFound {len(scenarios)} unique scenarios")
+    print(f"Using S={s_ref} as the reference scaling factor")
 
     records = []
     for scenario_id, grp in scenarios:
-        ref_row = grp[grp["S"] == S_REF]
+        ref_row = grp[grp["S"] == s_ref]
         if len(ref_row) == 0:
-            print(f"  WARNING: no S={S_REF} reference for {scenario_id}; skipping")
+            print(f"  WARNING: no S={s_ref} reference for {scenario_id}; skipping")
             continue
 
         ref_path = ref_row.iloc[0]["path"]
@@ -361,7 +389,7 @@ def build_dataset(run, allow_partial: bool = False):
         print(f"\nScenario: {scenario_id}")
         print(f"  geometry={geometry_id}, ID={density}, v_pen={velocity}, ref rows={len(ref_grid)}")
 
-        for _, fast_row in grp[grp["S"] != S_REF].iterrows():
+        for _, fast_row in grp[grp["S"] != s_ref].iterrows():
             s_fast = fast_row["S"]
             fast_path = fast_row["path"]
 
@@ -455,14 +483,14 @@ def build_dataset(run, allow_partial: bool = False):
     meta = {
         "soil_model": run["name"],
         "soil_model_label": label,
-        "raw_dir": str(RAW_DIR),
+        "raw_dir": str(run["raw_dir"]),
         "metadata_path": str(run["metadata_path"]),
-        "expected_csv_count": len(expected_csvs_from_metadata(run["metadata_path"])),
+        "expected_csv_count": len(expected_csvs_from_metadata(run)),
         "observed_csv_count": len(all_files),
-        "S_ref": S_REF,
+        "S_ref": s_ref,
         "density_values": [0.3, 0.6, 0.8, 0.9],
         "velocity_values_cm_per_s": [25, 50, 100],
-        "scaling_factors": [1, 10, 30, 50, 100],
+        "scaling_factors": sorted(int(value) for value in df_info["S"].dropna().unique()),
         "smooth_window_qb": SMOOTH_WINDOW_QB,
         "shallow_depth_flag_m": SHALLOW_DEPTH_FLAG_M,
         "shallow_depth_note": (
@@ -473,12 +501,17 @@ def build_dataset(run, allow_partial: bool = False):
         "gradient_window": GRADIENT_WINDOW,
         "geometry_features_used_by_training": [
             "D_m",
+            "depth_over_D",
+        ],
+        "geometry_metadata_only": [
+            "L_m",
+            "L_over_D",
             "penetration_m",
             "penetration_over_D",
-            "depth_over_D",
+            "penetration_over_L",
+            "depth_over_L",
             "depth_over_penetration",
         ],
-        "geometry_metadata_only": ["L_m", "L_over_D", "penetration_over_L", "depth_over_L"],
         "qb_preprocessing": (
             "Rows are sorted by positive depth, qb is smoothed with the moving "
             "average window, then smoothed non-positive qb values are removed."

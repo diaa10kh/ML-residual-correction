@@ -8,6 +8,11 @@ import sys
 
 PY2 = sys.version_info[0] < 3
 
+try:
+    TEXT_TYPE = unicode
+except NameError:
+    TEXT_TYPE = str
+
 
 def _arg_value(flag):
     if flag in sys.argv:
@@ -122,6 +127,8 @@ def main():
 
     odb = open_odb(odb_path)
     step_name = config.get('step_name', 'Einpressen')
+    if PY2 and isinstance(step_name, TEXT_TYPE):
+        step_name = step_name.encode("utf-8")
     if step_name not in odb.steps.keys():
         raise RuntimeError('Step not found in ODB: %s' % step_name)
     step = odb.steps[step_name]

@@ -22,6 +22,8 @@ SLURM_SCRIPT_LOCAL="${MGS_SLURM_SCRIPT:-scripts/03_submit_slurm_array.sh}"
 USERRTN_LOCAL="${MGS_USERRTN:-abaqus/vumat-hypo-2020-hst.for}"
 CLEAR_REMOTE_INPUTS="${MGS_CLEAR_REMOTE_INPUTS:-1}"
 ARRAY_THROTTLE="${MGS_ARRAY_THROTTLE:-40}"
+SLURM_JOB_NAME="${MGS_SLURM_JOB_NAME:-mgs_full_hypo}"
+REMOTE_PROJECT_NAME="${MGS_PROJECT_NAME:-MGS_Full_Hypoplastic}"
 
 MODE="${1:-submit_all}"
 START_INDEX="${2:-0}"
@@ -128,7 +130,7 @@ submit_all() {
   fi
 
   echo "Submitting ${copied} jobs with array ${array_spec}"
-  ssh_remote "cd \"${ROOT_REMOTE}\"; sbatch --array=${array_spec} 03_submit_slurm_array.sh"
+  ssh_remote "cd \"${ROOT_REMOTE}\"; MGS_PROJECT_NAME=\"${REMOTE_PROJECT_NAME}\" sbatch --job-name=\"${SLURM_JOB_NAME}\" --array=${array_spec} 03_submit_slurm_array.sh"
 }
 
 fetch_results() {

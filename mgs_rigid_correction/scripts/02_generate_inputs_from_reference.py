@@ -1,6 +1,7 @@
 from __future__ import print_function
 
 import argparse
+import glob
 import os
 import sys
 
@@ -8,14 +9,14 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from mgs_common import as_float, mkdir_p, project_path, read_csv, resolve_project_path
+from mgs_common import as_float, mkdir_p, postprocess_csv_path, project_path, read_csv, resolve_project_path
 
 
 SOIL_BASE_DENSITY = 1.64
 STEEL_BASE_DENSITY = 7.8
 REFERENCE_D_M = 0.60
-REFERENCE_L_M = 12.0
-REFERENCE_PILE_INSTANCE_Z = 27.0
+REFERENCE_L_M = 11.0
+REFERENCE_PILE_INSTANCE_Z = 26.0
 
 
 def abaqus_number(value):
@@ -379,6 +380,20 @@ def patch_template(template_lines, row):
     return lines
 
 
+def patch_template_from_geometry_input(template_lines, row):
+    lines = list(template_lines)
+    soil_model = row.get("soil_model", "")
+    if soil_model == "Mohr-Coulomb":
+        patch_mc_soil_material(lines, row)
+    elif soil_model == "Hypoplastisch":
+        patch_hypoplastic_soil_material(lines, row)
+        patch_solution_initial_conditions(lines, row)
+    else:
+        raise RuntimeError("Unsupported soil_model for %s: %s" % (row.get("run_id"), soil_model))
+    patch_common_template(lines, row)
+    return lines
+
+
 def verify_reference(lines):
     required = [
         "*Material, name=HYPO-VW96-Sand",
@@ -447,6 +462,38 @@ def selected_rows(rows, run_id, limit, soil_model):
     return out
 
 
+def normalized_run_paths(row):
+    """Rebuild run paths from the current project root and run_id.
+
+    Metadata can be generated on another machine or inside an execution sandbox.
+    The run_id is the stable source of truth for local input generation.
+    """
+    row = dict(row)
+    run_id = row["run_id"]
+    run_dir = project_path("runs", run_id)
+    row["run_dir"] = run_dir
+    row["input_file"] = os.path.join(run_dir, run_id + ".inp")
+    row["case_config_file"] = os.path.join(run_dir, "case_config.json")
+    return row
+
+
+def geometry_template_path(row, template_dir):
+    pattern = os.path.join(template_dir, "CPT_90_MCM_%s_*.inp" % row["geometry_id"])
+    matches = sorted(glob.glob(pattern))
+    if len(matches) == 0:
+        return None
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Expected exactly one geometry template for %s in %s; found %d"
+            % (row["geometry_id"], template_dir, len(matches))
+        )
+    return matches[0]
+
+
+def is_reference_diameter(row):
+    return abs(as_float(row.get("D_m"), REFERENCE_D_M) - REFERENCE_D_M) <= 1.0e-9
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Create Abaqus .inp files by patching a checked reference input file."
@@ -454,7 +501,16 @@ def main():
     parser.add_argument("--metadata", default=project_path("data", "extracted", "run_metadata_full.csv"))
     parser.add_argument(
         "--reference-inp",
-        default=project_path("reference_inputs", "CPT_90_MCM_einpressen_Voll_S001.inp"),
+        default=project_path("reference_inputs", "Pile_11_m_einpressen_Voll_S001.inp"),
+    )
+    parser.add_argument(
+        "--geometry-template-dir",
+        default=project_path("reference_inputs", "generated_pile_geometries"),
+        help=(
+            "Directory with one checked pile-geometry template per geometry_id. "
+            "When present, these templates are used for non-reference diameters; "
+            "the reference diameter falls back to --reference-inp."
+        ),
     )
     parser.add_argument("--run-id", default="")
     parser.add_argument("--limit", type=int, default=0)
@@ -474,11 +530,16 @@ def main():
 
     metadata_path = resolve_project_path(args.metadata)
     reference_inp = resolve_project_path(args.reference_inp)
+    geometry_template_dir = resolve_project_path(args.geometry_template_dir)
     vumat = resolve_project_path(args.vumat)
 
-    rows = selected_rows(read_csv(metadata_path), args.run_id, args.limit, args.soil_model)
+    rows = [
+        normalized_run_paths(row)
+        for row in selected_rows(read_csv(metadata_path), args.run_id, args.limit, args.soil_model)
+    ]
     if not rows:
         raise SystemExit("No rows selected from %s" % metadata_path)
+    use_geometry_templates = bool(geometry_template_dir) and os.path.isdir(geometry_template_dir)
     if not os.path.exists(reference_inp):
         raise SystemExit("Reference input not found: %s" % reference_inp)
     if any(row.get("soil_model") == "Hypoplastisch" for row in rows) and not os.path.exists(vumat):
@@ -491,6 +552,7 @@ def main():
     removed_files = 0
     written = 0
     by_model = {}
+    template_cache = {}
     for row in rows:
         run_id = row["run_id"]
         run_dir = row["run_dir"]
@@ -499,16 +561,36 @@ def main():
         else:
             mkdir_p(run_dir)
         if args.clean_derived_data:
-            remove_if_exists(row.get("postprocess_csv", ""))
+            remove_if_exists(postprocess_csv_path(row))
             remove_if_exists(row.get("resampled_csv", ""))
         output = row["input_file"]
-        patched = patch_template(template_lines, row)
+        if use_geometry_templates:
+            template_path = geometry_template_path(row, geometry_template_dir)
+            if template_path is None:
+                if not is_reference_diameter(row):
+                    raise RuntimeError(
+                        "No generated geometry template for %s, and D_m=%s is not the reference diameter."
+                        % (row["geometry_id"], row.get("D_m"))
+                    )
+                patched = patch_template_from_geometry_input(template_lines, row)
+            elif template_path not in template_cache:
+                with open(template_path, "r") as handle:
+                    template_cache[template_path] = handle.readlines()
+                verify_reference(template_cache[template_path])
+                patched = patch_template_from_geometry_input(template_cache[template_path], row)
+            else:
+                patched = patch_template_from_geometry_input(template_cache[template_path], row)
+        else:
+            patched = patch_template(template_lines, row)
         with open(output, "w") as handle:
             handle.writelines(patched)
         written += 1
         by_model[row.get("soil_model", "")] = by_model.get(row.get("soil_model", ""), 0) + 1
 
-    print("Reference: %s" % reference_inp)
+    if use_geometry_templates:
+        print("Geometry templates: %s" % geometry_template_dir)
+    else:
+        print("Reference: %s" % reference_inp)
     if any(row.get("soil_model") == "Hypoplastisch" for row in rows):
         print("VUMAT: %s" % vumat)
     print("Removed %d old run-folder file(s)." % removed_files)

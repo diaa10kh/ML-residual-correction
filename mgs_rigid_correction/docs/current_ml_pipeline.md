@@ -7,16 +7,20 @@ It supersedes the older planning notes in `ml_residual_correction_plan.md`.
 ## Purpose
 
 The ML model corrects high mass-scaling base resistance curves back toward the
-`S=1` reference curve. The current model is intentionally for base resistance
+`S=7` reference curve. The current model is intentionally for base resistance
 `q_b` only. Shaft resistance `q_s` is plotted during raw-data inspection but is
 not used as an ML target or ML input feature because it is small, sensitive to
 local changes, and there is no matching centrifuge-test `q_s` correction target.
 
-The full-version simulations are generated from the checked Abaqus reference
-input. For the CEL setup, the soil mesh/contact definitions are kept unchanged,
-while the pile and press coordinates, press displacement, timing, and
-material/scaling data are patched per metadata row. The historical folder name
-`mgs_rigid_correction` should not be read as a rigid-pile modelling assumption.
+The active reduced simulations are generated from a checked Abaqus reference
+input with `L = 11 m`. It is converted into three diameter templates under
+`reference_inputs/generated_pile_geometries/`.
+For the CEL setup, the soil mesh/contact definitions are kept unchanged. The
+full run-input generator then uses the matching geometry template for each
+`geometry_id` and patches only scenario-specific values such as press
+displacement, timing, material parameters, density scaling, and gravity scaling.
+The historical folder name `mgs_rigid_correction` should not be read as a
+rigid-pile modelling assumption.
 
 For each high-S curve, the target residual is:
 
@@ -35,7 +39,8 @@ qb_corrected = qb_fast + predicted_res_qb
 The dataset builder reads extracted per-run CSV files from:
 
 ```text
-data/extracted/per_run_csv/
+data/extracted/per_run_csv/mcm/
+data/extracted/per_run_csv/hypoplastic/
 ```
 
 It writes separate datasets for each soil model:
@@ -53,18 +58,18 @@ real_dataset_plot.csv
 dataset_meta.json
 ```
 
-The full-version matrix expects 540 CSV files per soil model:
+The active reduced matrix expects 180 CSV files per soil model:
 
 ```text
-9 geometries x 4 densities x 3 velocities x 5 scaling factors = 540
+3 diameters x 4 densities x 3 velocities x 5 scaling factors = 180
 ```
 
 The dataset builder is metadata-driven. It reads the planned geometry and run
 information from `run_metadata_full.csv` for hypoplastic runs and
 `run_metadata_full_mohr_coulomb.csv` for MCM runs.
 
-The builder pairs each high-S run (`S=10, 30, 50, 100`) with the matching
-`S=1` reference using `scenario_id`. It uses exact depth matching, keeps the
+The builder pairs each high-S run (`S=15, 30, 50, 100`) with the matching
+`S=7` reference using `scenario_id`. It uses exact depth matching, keeps the
 same positive-depth domain as the pre-ML raw plots, smooths `q_b` first, then
 removes smoothed non-positive `q_b` values. It also computes `qb_fast_grad`,
 flags rows shallower than `1 m`, and reports outliers by `S`.
@@ -81,10 +86,7 @@ depth
 qb_fast
 qb_fast_grad
 D_m
-penetration_m
-penetration_over_D
 depth_over_D
-depth_over_penetration
 S_x_depth
 ID_x_depth
 S_x_ID
@@ -92,16 +94,15 @@ v_x_S
 grad_x_S
 grad_x_ID
 S_x_depth_over_D
-S_x_penetration_over_D
 ```
 
-The `S=1` response is not used as an input feature. It is used only to compute
+The `S=7` response is not used as an input feature. It is used only to compute
 the residual target.
 
 `L_m`, `L_over_D`, `penetration_over_L`, and `depth_over_L` are retained as
-metadata/diagnostic values. They are not core ML features in the full-version
-model because pile length is linked to the selected penetration depth through
-`penetration/L = 0.90`.
+metadata/diagnostic values. They are not core ML features in the active reduced
+model because pile length is fixed at `L_m = 11 m` and penetration is fixed at
+`penetration_m = 9 m`.
 
 The first meter is included in training. The dataset still keeps the
 `is_shallow` flag for inspection, but the current trainer uses the complete
@@ -114,7 +115,7 @@ S-dependent scale factor to the predicted residual. All current factors are
 
 ```text
 qb_corrected = qb_fast + alpha(S) * predicted_residual
-alpha(10) = 1.0
+alpha(15) = 1.0
 alpha(30) = 1.0
 alpha(50) = 1.0
 alpha(100) = 1.0
@@ -151,11 +152,12 @@ qb corrected vs ref
 ```
 
 The generated `test_predictions.csv` contains grouped out-of-fold predictions
-for all 12 density-velocity scenarios. Each scenario is predicted by a model
-trained without that scenario, so all density levels and all velocity levels are
-represented in the reported validation metrics:
+for all 36 geometry-density-velocity scenarios. Each scenario is predicted by a
+model trained without that scenario, so all diameter, density, and velocity
+levels are represented in the reported validation metrics:
 
 ```text
+geometries = G0..G2
 ID = 0.3, 0.6, 0.8, 0.9
 v  = 25, 50, 100 cm/s
 ```
@@ -163,18 +165,20 @@ v  = 25, 50, 100 cm/s
 Additional grouped breakdowns are written to `metrics_by_group.csv`, and the
 per-fold scenario metrics are written to `validation_folds.csv`.
 
-For full-version datasets, the trainer also writes stricter robustness checks:
+For active reduced datasets, the trainer also writes stricter robustness checks
+where the grouping has at least two values:
 
 ```text
 validation_strategy_summary.csv
 validation_leave_one_geometry.csv
 validation_leave_one_diameter.csv
-validation_leave_one_penetration.csv
+validation_leave_one_penetration.csv  (skipped for the current fixed-penetration matrix)
 ```
 
 Grouped scenario out-of-fold validation remains the main publication
-performance evidence. The geometry, diameter, and penetration holdouts are
-robustness checks for stronger extrapolation claims.
+performance evidence. The geometry and diameter holdouts are robustness checks
+for stronger extrapolation claims; penetration holdout is not informative while
+all simulations use `penetration_m = 9 m`.
 
 `oof_predictions.csv` is the preferred source for validation plots. It is the
 same grouped out-of-fold prediction table that is also written as
@@ -219,7 +223,7 @@ sensitivity_vs_S.png
 sensitivity_vs_ID.png
 heatmap_S_vs_ID.png
 heatmap_S_vs_depth.png
-pub_A_correction_curve_S10.png
+pub_A_correction_curve_S15.png
 pub_A_correction_curve_S30.png
 pub_A_correction_curve_S50.png
 pub_A_correction_curve_S100.png
@@ -245,7 +249,7 @@ curve for each S level. It is useful as a clean illustration, but it should be
 described as a best-case validation example rather than as a representative
 case.
 
-`pub_C_predicted_vs_actual.png` compares actual/reference `q_b` from `S=1`
+`pub_C_predicted_vs_actual.png` compares actual/reference `q_b` from `S=7`
 against the raw high-S `q_b` and the corrected `q_b`. Points on the dashed line
 are perfect `q_b` predictions.
 

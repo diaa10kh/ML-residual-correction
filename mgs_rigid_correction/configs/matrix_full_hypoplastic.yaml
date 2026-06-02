@@ -1,13 +1,13 @@
 {
-  "phase": "phase0",
+  "phase": "full",
   "soil_model": "Hypoplastisch",
+  "geometry_label_mode": "diameter",
   "reference_velocity_m_per_s": 0.5,
-  "penetration_eta_max": 0.90,
   "symmetry_factor": 4,
   "void_ratio": {
     "e_min": 0.49,
     "e_max": 0.76,
-    "reference_scenario_id": "G0_DENS_REF_V_REF",
+    "reference_scenario_id": "G0_D045_DENS_REF_V_REF",
     "reference_density_id": "DENS_REF",
     "reference_profile": {
       "soil_void": 0.615854,
@@ -23,10 +23,24 @@
   "geometries": [
     {
       "geometry_id": "G0",
+      "D_m": 0.45,
+      "penetration_m": 9.00,
+      "L_m": 11.00,
+      "purpose": "small diameter, fixed reference pile length and 9 m penetration"
+    },
+    {
+      "geometry_id": "G1",
       "D_m": 0.60,
-      "L_over_D": 16.67,
-      "L_m": 10.00,
-      "purpose": "benchmark geometry"
+      "penetration_m": 9.00,
+      "L_m": 11.00,
+      "purpose": "benchmark diameter, fixed reference pile length and 9 m penetration"
+    },
+    {
+      "geometry_id": "G2",
+      "D_m": 0.75,
+      "penetration_m": 9.00,
+      "L_m": 11.00,
+      "purpose": "large diameter, fixed reference pile length and 9 m penetration"
     }
   ],
   "densities": [
@@ -68,5 +82,5 @@
       "purpose": "quicker than reference"
     }
   ],
-  "scaling_factors": [1, 10, 30, 50, 100]
+  "scaling_factors": [7, 15, 30, 50, 100]
 }

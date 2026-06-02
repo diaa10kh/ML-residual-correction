@@ -1,17 +1,15 @@
 # Deformable-Pile MGS Residual Correction Workflow
 
-This folder is the active workflow. The simplified Phase 0 path generates
-Abaqus input files from one checked reference input file, while the full-version
-geometry path prepares Abaqus/CAE model-building cases so pile diameter and
-model dimensions can change. Both paths then run simulations on the cluster,
-extract ODB curves, and train a residual correction model.
+This folder is the active workflow. It generates Abaqus input files from the
+checked 11 m pile reference input, runs the reduced diameter-only matrix on the
+cluster, extracts ODB curves, and trains a residual correction model.
 
 Important modelling note: despite the historical folder name
-`mgs_rigid_correction`, the active simplified simulations use a deformable steel
-volume-element pile. The checked reference input contains a steel `C3D8R` pile
+`mgs_rigid_correction`, the active simulations use a deformable steel
+volume-element pile. The checked reference inputs contain a steel `C3D8R` pile
 with a solid section assigned to material `Stahl`; the rigid-body constraint in
-the reference input applies to the press/loading body (`Presse`), not to the
-pile itself.
+the input files applies to the press/loading body (`Presse`), not to the pile
+itself.
 
 Run commands from this folder unless noted otherwise:
 
@@ -29,24 +27,26 @@ environment, use the repository virtual environment explicitly:
 ## Active Files
 
 ```text
-configs/                              matrix definitions
-reference_inputs/CPT_90_MCM_...inp    checked Mohr-Coulomb reference input
-abaqus/vumat-hypo-2020-hst.for        VUMAT for hypoplastic runs
-abaqus/full_geometry_generator/       full-version Abaqus model builder
-scripts/01_generate_matrix.py         write run metadata
+configs/                                  matrix definitions
+reference_inputs/Pile_11_m_...inp         checked active 11 m pile reference
+reference_inputs/generated_pile_geometries/
+                                          checked non-reference diameter templates
+abaqus/vumat-hypo-2020-hst.for            VUMAT for hypoplastic runs
+abaqus/full_geometry_generator/           full-version Abaqus model builder
+scripts/01_generate_matrix.py             write run metadata
 scripts/02_generate_inputs_from_reference.py
-scripts/03_submit_slurm_array.sh      remote SLURM array script
-scripts/04_check_jobs.py              check expected files
-scripts/05_run_postprocessing.py      prepare/run ODB extraction
-scripts/06_plot_pre_ml_raw_curves.py  plot raw extracted curves before ML
-scripts/07_build_ml_dataset.py        build paired residual datasets
-scripts/08_train_correction_model.py  train model and plots
+scripts/03_submit_slurm_array.sh          remote SLURM array script
+scripts/04_check_jobs.py                  check expected files
+scripts/05_run_postprocessing.py          prepare/run ODB extraction
+scripts/06_plot_pre_ml_raw_curves.py      plot raw extracted curves before ML
+scripts/07_build_ml_dataset.py            build paired residual datasets
+scripts/08_train_correction_model.py      train model and plots
+scripts/09_generate_pile_geometry_input_variants.py
+                                          regenerate non-reference diameter templates
 ```
 
-The Abaqus/CAE model-building generator is not used for the simplified Phase 0
-reference-input workflow. The `full-version` geometry workflow uses it because
-the reference `.inp` patcher cannot change pile diameter and model dimensions.
-It is kept under:
+The Abaqus/CAE model-building generator is not used by the active
+reference-input workflow. It is kept under:
 
 ```text
 abaqus/full_geometry_generator/
@@ -54,10 +54,10 @@ abaqus/full_geometry_generator/
 
 ## Quick Start: Full-Version Geometry Metadata
 
-The full-version matrix plans 540 runs per soil model:
+The reduced active matrix plans 180 runs per soil model:
 
 ```text
-9 geometries x 4 densities x 3 velocities x 5 scaling factors = 540
+3 diameters x 4 densities x 3 velocities x 5 scaling factors = 180
 ```
 
 Generate hypoplastic metadata only:
@@ -81,109 +81,80 @@ python scripts\01_generate_matrix.py --soil-model both
 The full-version metadata files are:
 
 ```text
+configs/matrix_full_hypoplastic.yaml
+configs/matrix_full_mohr_coulomb.yaml
 data/extracted/run_metadata_full.csv
 data/extracted/run_metadata_full_mohr_coulomb.csv
 ```
 
-Generate the 540 hypoplastic `.inp` files from the checked reference input:
+## Input Generation
+
+The active input-generation workflow has two levels.
+
+First, regenerate the non-reference geometry templates when the checked
+`L = 11 m` pile reference changes:
+
+```powershell
+python scripts\09_generate_pile_geometry_input_variants.py
+```
+
+The active reduced matrix uses this checked reference:
+
+```text
+reference_inputs/Pile_11_m_einpressen_Voll_S001.inp
+```
+
+The filename is historical. In the active matrix, this reference geometry is
+used for the `S=7` reference simulations and for the higher scaling factors.
+
+and writes:
+
+```text
+reference_inputs/generated_pile_geometries/
+```
+
+For all generated templates, the pile bottom is placed at the soil top
+elevation `z = 26 m`, and the press is placed on top of the pile at
+`z = 26 m + L_m`.
+
+Then generate full run inputs from the geometry templates and metadata.
+
+Generate the 180 hypoplastic `.inp` files:
 
 ```powershell
 python scripts\02_generate_inputs_from_reference.py --metadata data\extracted\run_metadata_full.csv --soil-model Hypoplastisch --clean
 ```
 
-The full-version run names include the geometry dimensions. For example,
-`G5_D060_P110_DENS_HIGH_V_LOW_S001` means geometry `G5`, `D=0.60 m`,
-`penetration=11.0 m`, high density, low velocity, and `S=1`.
-
-The full-version geometry design varies pile diameter and capped penetration
-depth. Pile length is linked to penetration through `penetration/L = 0.90`, so
-`L_m`, `L_over_D`, and `penetration_over_L` are metadata/diagnostic values, not
-independent geometry effects.
-
-The direct reference-input patcher changes only the pile and press coordinates,
-press displacement, timing, and material/scaling data. The CEL soil mesh and
-contact definitions are copied unchanged.
-
-## Quick Start: Phase 0 Hypoplastic
-
-Generate the 60-run Phase 0 matrix:
+Generate the 180 Mohr-Coulomb `.inp` files only:
 
 ```powershell
-python scripts\01_generate_matrix.py --config configs\matrix_phase0.yaml --output data\extracted\run_metadata_phase0.csv
+python scripts\02_generate_inputs_from_reference.py --metadata data\extracted\run_metadata_full_mohr_coulomb.csv --soil-model Mohr-Coulomb --clean
 ```
 
-Create `.inp` files by patching the reference input:
+The active run names include only the varied geometry dimension. For example,
+`G1_D060_DENS_HIGH_V_LOW_S007` means geometry `G1`, `D=0.60 m`,
+high density, low velocity, and `S=7`.
 
-```powershell
-python scripts\02_generate_inputs_from_reference.py --metadata data\extracted\run_metadata_phase0.csv --soil-model Hypoplastisch --clean
-```
+The active geometry design varies only pile diameter: `D = 0.45, 0.60, 0.75 m`.
+Pile length is fixed at `L_m = 11 m`, and penetration depth is fixed at
+`penetration_m = 9 m`.
 
-`--clean` only removes previously generated input/helper files in the selected
-run folders. It does not remove `.odb`, `.sta`, `.msg`, `.dat`, or output logs.
-
-Check generated files:
-
-```powershell
-python scripts\04_check_jobs.py --metadata data\extracted\run_metadata_phase0.csv --output reports\tables\job_status_phase0.csv
-```
-
-Expected full Phase 0 hypoplastic input count:
-
-```text
-inp=60
-```
-
-## Quick Start: Phase 0 Mohr-Coulomb
-
-Generate the Mohr-Coulomb matrix:
-
-```powershell
-python scripts\01_generate_matrix.py --config configs\matrix_phase0_mohr_coulomb.yaml --output data\extracted\run_metadata_phase0_mohr_coulomb.csv
-```
-
-Create the 60 Mohr-Coulomb `.inp` files:
-
-```powershell
-python scripts\02_generate_inputs_from_reference.py --metadata data\extracted\run_metadata_phase0_mohr_coulomb.csv --soil-model Mohr-Coulomb --clean
-```
-
-Check generated files:
-
-```powershell
-python scripts\04_check_jobs.py --metadata data\extracted\run_metadata_phase0_mohr_coulomb.csv --output reports\tables\job_status_phase0_mohr_coulomb.csv
-```
-
-Expected full Phase 0 Mohr-Coulomb input count:
-
-```text
-inp=60
-```
-
-## Optional Phase 1
-
-Phase 1 remains available through `configs/matrix_phase1.yaml`. It uses the
-same reference-input generator:
-
-```powershell
-python scripts\01_generate_matrix.py --config configs\matrix_phase1.yaml --output data\extracted\run_metadata.csv
-python scripts\02_generate_inputs_from_reference.py --metadata data\extracted\run_metadata.csv --soil-model Hypoplastisch --clean
-```
-
-Expected full Phase 1 input count:
-
-```text
-inp=60
-```
+The run-input generator uses one geometry template per `geometry_id`. It does
+not rescale pile length from the older 12 m baseline input. It patches only
+scenario-specific values: material/scaling data, press displacement, step
+timing, and output intervals. The CEL soil mesh and contact definitions are
+copied unchanged from the geometry templates.
 
 ## Cluster Run
 
-After `.inp` files exist, submit from WSL:
+After `.inp` files exist, submit from WSL. The default command submits the
+hypoplastic metadata/run set:
 
 ```bash
 bash scripts/12_cluster_transfer_submit_fetch.sh submit_all
 ```
 
-On the full-version branch this submits the 540 hypoplastic inputs listed in:
+On the active reduced matrix this submits the 180 hypoplastic inputs listed in:
 
 ```text
 data/extracted/run_metadata_full.csv
@@ -202,11 +173,13 @@ limit. To add a throttle intentionally, set `MGS_ARRAY_THROTTLE`, for example:
 MGS_ARRAY_THROTTLE=40 bash scripts/12_cluster_transfer_submit_fetch.sh submit_all
 ```
 
-Useful overrides:
+Submit only the Mohr-Coulomb inputs:
 
 ```bash
-MGS_MATRIX_CSV="data/extracted/run_metadata_phase0_mohr_coulomb.csv" \
-MGS_ROOT_REMOTE="/work/gbt/cda6556/MGS_Rigid_Correction/PHASE0_MC" \
+MGS_MATRIX_CSV="data/extracted/run_metadata_full_mohr_coulomb.csv" \
+MGS_ROOT_REMOTE="/work/gbt/cda6556/MGS_Rigid_Correction/FULL_MC" \
+MGS_SLURM_JOB_NAME="mgs_full_mcm" \
+MGS_PROJECT_NAME="MGS_Full_Mohr_Coulomb" \
 bash scripts/12_cluster_transfer_submit_fetch.sh submit_all
 ```
 
@@ -216,14 +189,18 @@ Fetch results later:
 bash scripts/12_cluster_transfer_submit_fetch.sh fetch
 ```
 
-If the Codex app cannot see your WSL distribution but your normal terminal can,
-start the controlled bridge from a normal PowerShell terminal:
+The Codex app should use direct WSL/SSH access only. If WSL is not available in
+the Codex environment, generate and validate the inputs locally, then submit
+manually from your normal WSL terminal using the commands above.
+
+There is an optional controlled bridge script for manual use from a normal
+PowerShell terminal:
 
 ```powershell
 .\scripts\14_wsl_cluster_bridge.ps1
 ```
 
-The bridge only accepts these fixed actions through
+The bridge accepts only these fixed actions through
 `.codex_cluster_bridge/request.json`: `status`, `cancel_all`, `cancel_job`,
 `submit_hypo`, `submit_mc`, `fetch_hypo`, `fetch_mc`, and `exit`.
 
@@ -235,28 +212,33 @@ run with `vumat-hypo-2020-hst.for`; otherwise it runs without a user routine.
 After `.odb` files are back in `runs/{run_id}/`:
 
 ```powershell
-python scripts\05_run_postprocessing.py --metadata data\extracted\run_metadata_phase0.csv --execute
+python scripts\05_run_postprocessing.py --metadata data\extracted\run_metadata_full.csv --execute
 python scripts\06_plot_pre_ml_raw_curves.py
 python scripts\07_build_ml_dataset.py
 python scripts\08_train_correction_model.py
 ```
 
 `06_plot_pre_ml_raw_curves.py` is a pre-ML inspection step. It reads extracted
-CSV files directly from `data/extracted/per_run_csv/`, applies only a moving
-average, and writes raw curve PNGs under:
+CSV files directly from `data/extracted/per_run_csv/{mcm,hypoplastic}/`,
+applies only a moving average, and writes compact geometry overview PNGs under:
 
 ```text
-plots/raw_averaged_plots/{mcm,hypoplastic}/
+plots/raw_averaged_plots/{mcm,hypoplastic}/overview_by_geometry/
 ```
 
-The moving-average and `q_s` axis limits are set near the top of the script.
-The current defaults are 20 points for MCM and 30 points for hypoplastic.
+For the full matrix this produces one 12-panel page per geometry and quantity
+instead of one plot per scenario. Use `--plot-scenarios` only when detailed
+per-scenario PNGs are needed. The moving-average windows are set near the top
+of the script; the current defaults are 30 points for both MCM and hypoplastic.
 
 `07_build_ml_dataset.py` validates the extracted CSV files against the metadata
-matrix. On the full-version branch it expects the metadata-driven full matrix
-by default: 540 extracted CSVs per soil model. It stops if files are missing,
-so stale partial results are not trained by accident. For an exploratory
-partial-data build only, add:
+matrix. In the active reduced setup it expects 180 extracted CSVs per soil
+model by default. It stops if files are missing, so stale partial results are
+not trained by accident. For an exploratory partial-data build only, add:
+
+After geometry changes, regenerate inputs and re-extract CSVs before rebuilding
+the ML dataset. Old CSVs from previous naming or geometry rules must not be
+treated as current data.
 
 ```powershell
 python scripts\07_build_ml_dataset.py --allow-partial
@@ -268,7 +250,8 @@ Both ML scripts also accept `--soil-model mcm`, `--soil-model hypoplastic`, or
 `07_build_ml_dataset.py` expects per-run CSV files in:
 
 ```text
-data/extracted/per_run_csv/
+data/extracted/per_run_csv/mcm/
+data/extracted/per_run_csv/hypoplastic/
 ```
 
 It writes model-specific datasets under:
@@ -307,7 +290,7 @@ Shaft resistance `q_s` is intentionally not trained or corrected in this
 workflow. It is small, sensitive to local changes, and there is no matching
 centrifuge-test `q_s` result available for the same correction target.
 
-Only high-S quantities are used as ML input features. The S=1 response is used
+Only high-S quantities are used as ML input features. The S=7 response is used
 only as the reference target. The current model is trained on the complete
 depth range, including rows flagged as shallow by the dataset builder
 (`depth < 1 m`), and the green ML correction curve is plotted from the surface.
@@ -315,7 +298,7 @@ The predicted residual is applied through an optional S-dependent scale factor.
 All current factors are set to 1.0, so no damping is active:
 
 ```text
-alpha(S=10) = 1.0
+alpha(S=15) = 1.0
 alpha(S=30) = 1.0
 alpha(S=50) = 1.0
 alpha(S=100) = 1.0
@@ -334,12 +317,12 @@ RMSE    = sqrt(mean((qb_pred - qb_ref)^2))
 The generated `metrics.csv` and `test_predictions.csv` are based on grouped
 out-of-fold validation by `scenario_id`. Each density-velocity scenario is
 predicted by a model trained without that scenario, so the reported validation
-metrics cover all 12 density-velocity scenarios. The processed dataset contains
-all four density levels (`ID=0.3, 0.6, 0.8, 0.9`) and all three velocity levels
-(`25, 50, 100 cm/s`):
+metrics cover all 36 geometry-density-velocity scenarios. The processed dataset
+contains all three diameters, all four density levels (`ID=0.3, 0.6, 0.8, 0.9`),
+and all three velocity levels (`25, 50, 100 cm/s`):
 
 ```text
-4 densities x 3 velocities x 4 high-S correction cases = 48 corrected curves
+3 diameters x 4 densities x 3 velocities x 4 high-S correction cases = 144 corrected curves
 ```
 
 Additional grouped breakdowns are written to `metrics_by_group.csv`, and the
@@ -372,25 +355,25 @@ docs/current_ml_pipeline.md
 Each simulation uses:
 
 ```text
-{geometry_id}_{density_id}_{velocity_id}_S{S as 3 digits}
+{geometry_label}_{density_id}_{velocity_id}_S{S as 3 digits}
 ```
 
 Examples:
 
 ```text
-G0_DENS_REF_V_REF_S001
-G0_DENS_REF_V_REF_S010
-G0_DENS_REF_V_REF_S100
+G1_D060_DENS_REF_V_REF_S007
+G1_D060_DENS_REF_V_REF_S015
+G1_D060_DENS_REF_V_REF_S100
 ```
 
 Mohr-Coulomb runs are prefixed with `MC_`:
 
 ```text
-MC_G0_DENS_REF_V_REF_S001
+MC_G1_D060_DENS_REF_V_REF_S007
 ```
 
 All runs with the same `scenario_id` belong together. High-S runs are paired
-with the corresponding `S=1` reference for residual learning.
+with the corresponding `S=7` reference for residual learning.
 
 ## Modelling Rules
 
@@ -406,11 +389,11 @@ to the deformable steel pile material. The gravity scaling is applied to the
 soil gravity load. The pile remains a deformable volume-element pile; it is not
 converted into a rigid body by the simplified workflow.
 
-The full-version matrix uses nine diameter/penetration geometries, four
+The active reduced matrix uses three diameter-only geometries, four
 relative-density levels (`ID=0.3, 0.6, 0.8, 0.9`), three penetration velocities
 (`0.25, 0.50, 1.00 m/s`, equivalent to `25, 50, 100 cm/s`), and five scaling
-factors (`1, 10, 30, 50, 100`). That is
-`9 x 4 x 3 x 5 = 540` simulations per soil model.
+factors (`7, 15, 30, 50, 100`). That is
+`3 x 4 x 3 x 5 = 180` simulations per soil model.
 
 Field output is intentionally sparse to reduce ODB size. The generated
 `Einpressen` step uses:
@@ -446,5 +429,5 @@ python -B -c "import pathlib; [compile(p.read_text(encoding='utf-8-sig'), str(p)
 Smoke-test one input file:
 
 ```powershell
-python scripts\02_generate_inputs_from_reference.py --metadata data\extracted\run_metadata_phase0.csv --run-id G0_DENS_REF_V_REF_S001 --clean
+python scripts\02_generate_inputs_from_reference.py --metadata data\extracted\run_metadata_full_mohr_coulomb.csv --run-id MC_G1_D060_DENS_REF_V_REF_S007 --clean
 ```

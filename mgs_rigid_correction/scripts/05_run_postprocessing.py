@@ -9,7 +9,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from mgs_common import mkdir_p, project_path, read_csv, resolve_project_path, row_to_jsonable, write_json
+from mgs_common import mkdir_p, postprocess_csv_path, project_path, read_csv, resolve_project_path, row_to_jsonable, write_json
 
 
 def selected_rows(rows, run_id, limit, require_odb):
@@ -35,7 +35,7 @@ def run_abaqus(abaqus_cmd, postprocessor_script, config_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Prepare and optionally run Abaqus postprocessing.")
-    parser.add_argument("--metadata", default=project_path("data", "extracted", "run_metadata_phase0.csv"))
+    parser.add_argument("--metadata", default=project_path("data", "extracted", "run_metadata_full.csv"))
     parser.add_argument("--postprocessor-script", default=project_path("scripts", "abaqus_extract_odb.py"))
     parser.add_argument("--abaqus-cmd", default="abaqus")
     parser.add_argument("--run-id", default="")
@@ -61,7 +61,8 @@ def main():
         mkdir_p(run_dir)
         config_path = os.path.join(run_dir, "postprocess_config.json")
         config = row_to_jsonable(row)
-        config["output_csv"] = row.get("postprocess_csv")
+        config["output_csv"] = postprocess_csv_path(row)
+        config["postprocess_csv"] = config["output_csv"]
         config["odb_path"] = os.path.abspath(odb_path) if odb_path else row.get("odb_file")
         config["sta_path"] = row.get("sta_file")
         config["force_unit_scale_to_kN"] = 1.0

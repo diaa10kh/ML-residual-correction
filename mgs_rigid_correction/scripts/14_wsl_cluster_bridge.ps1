@@ -14,7 +14,7 @@ $OutputPath = Join-Path $BridgeDir "last_output.log"
 $ClusterUser = if ($env:MGS_CLUSTER_USER) { $env:MGS_CLUSTER_USER } else { "cda6556" }
 $ClusterHost = if ($env:MGS_CLUSTER_HOST) { $env:MGS_CLUSTER_HOST } else { "hpc2.rz.tuhh.de" }
 $HypoRemote = if ($env:MGS_HYPO_REMOTE) { $env:MGS_HYPO_REMOTE } else { "/work/gbt/$ClusterUser/MGS_Rigid_Correction/FULL_HYPO" }
-$McRemote = if ($env:MGS_MC_REMOTE) { $env:MGS_MC_REMOTE } else { "/work/gbt/$ClusterUser/MGS_Rigid_Correction/PHASE0_MC" }
+$McRemote = if ($env:MGS_MC_REMOTE) { $env:MGS_MC_REMOTE } else { "/work/gbt/$ClusterUser/MGS_Rigid_Correction/FULL_MC" }
 
 New-Item -ItemType Directory -Force -Path $BridgeDir | Out-Null
 
@@ -117,7 +117,7 @@ function Invoke-Action {
         }
         "submit_mc" {
             $remote = ConvertTo-BashSingleQuoted -Value $McRemote
-            Invoke-WslProjectBash -Action $action -BashCommand "MGS_MATRIX_CSV=data/extracted/run_metadata_phase0_mohr_coulomb.csv MGS_ROOT_REMOTE=$remote bash ./scripts/12_cluster_transfer_submit_fetch.sh submit_all"
+            Invoke-WslProjectBash -Action $action -BashCommand "MGS_MATRIX_CSV=data/extracted/run_metadata_full_mohr_coulomb.csv MGS_ROOT_REMOTE=$remote MGS_SLURM_JOB_NAME=mgs_full_mcm MGS_PROJECT_NAME=MGS_Full_Mohr_Coulomb bash ./scripts/12_cluster_transfer_submit_fetch.sh submit_all"
         }
         "fetch_hypo" {
             $remote = ConvertTo-BashSingleQuoted -Value $HypoRemote
@@ -125,7 +125,7 @@ function Invoke-Action {
         }
         "fetch_mc" {
             $remote = ConvertTo-BashSingleQuoted -Value $McRemote
-            Invoke-WslProjectBash -Action $action -BashCommand "MGS_MATRIX_CSV=data/extracted/run_metadata_phase0_mohr_coulomb.csv MGS_ROOT_REMOTE=$remote bash ./scripts/12_cluster_transfer_submit_fetch.sh fetch"
+            Invoke-WslProjectBash -Action $action -BashCommand "MGS_MATRIX_CSV=data/extracted/run_metadata_full_mohr_coulomb.csv MGS_ROOT_REMOTE=$remote bash ./scripts/12_cluster_transfer_submit_fetch.sh fetch"
         }
         "exit" {
             Write-BridgeStatus -State "stopped" -Action $action -Message "Bridge stopped by request."

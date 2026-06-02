@@ -94,6 +94,8 @@ def ensure_project_dirs():
         ("data", "raw", "msg"),
         ("data", "raw", "dat"),
         ("data", "extracted", "per_run_csv"),
+        ("data", "extracted", "per_run_csv", "hypoplastic"),
+        ("data", "extracted", "per_run_csv", "mcm"),
         ("data", "processed", "resampled_runs"),
         ("data", "benchmark"),
         ("models",),
@@ -160,14 +162,38 @@ def to_str(value):
     return str(value)
 
 
+def soil_model_key(soil_model, run_id=""):
+    value = to_str(soil_model).strip().lower().replace("_", "-")
+    if value in ("mcm", "mohr-coulomb", "mohr coulomb"):
+        return "mcm"
+    if value in ("hypoplastic", "hypoplastisch"):
+        return "hypoplastic"
+    if to_str(run_id).startswith("MC_"):
+        return "mcm"
+    return "hypoplastic"
+
+
+def per_run_csv_dir(soil_model, run_id=""):
+    return project_path("data", "extracted", "per_run_csv", soil_model_key(soil_model, run_id))
+
+
+def postprocess_csv_path(row):
+    run_id = row.get("run_id", "")
+    if not run_id:
+        return row.get("postprocess_csv", "")
+    return os.path.join(per_run_csv_dir(row.get("soil_model", ""), run_id), run_id + ".csv")
+
+
 def s_label(value):
     return "S%03d" % as_int(value)
 
 
 def geometry_label(geometry_id, D_m, penetration_m, mode):
+    D_cm = int(round(100.0 * D_m))
+    if mode in ("diameter", "diameter_only"):
+        return "%s_D%03d" % (geometry_id, D_cm)
     if mode != "dimensions":
         return geometry_id
-    D_cm = int(round(100.0 * D_m))
     penetration_dm = int(round(10.0 * penetration_m))
     return "%s_D%03d_P%03d" % (geometry_id, D_cm, penetration_dm)
 
@@ -189,7 +215,7 @@ def void_ratio_settings(config, scenario_id, density_id, ID_percent):
     settings = config.get("void_ratio", {})
     e_min = as_float(settings.get("e_min"), 0.49)
     e_max = as_float(settings.get("e_max"), 0.76)
-    reference_scenario_id = to_str(settings.get("reference_scenario_id", "G0_DENS_REF_V_REF"))
+    reference_scenario_id = to_str(settings.get("reference_scenario_id", "G0_D045_DENS_REF_V_REF"))
     reference_density_id = to_str(settings.get("reference_density_id", ""))
     reference_profile = settings.get("reference_profile", {})
     use_reference = scenario_id == reference_scenario_id
@@ -357,7 +383,10 @@ def expand_matrix(config):
                             "case_config_file": os.path.join(run_dir, "case_config.json"),
                             "odb_file": os.path.join(run_dir, run_id + ".odb"),
                             "sta_file": os.path.join(run_dir, run_id + ".sta"),
-                            "postprocess_csv": project_path("data", "extracted", "per_run_csv", run_id + ".csv"),
+                            "postprocess_csv": os.path.join(
+                                per_run_csv_dir(soil_model, run_id),
+                                run_id + ".csv",
+                            ),
                             "resampled_csv": project_path("data", "processed", "resampled_runs", run_id + ".csv"),
                             "status": "planned",
                         }
@@ -647,7 +676,11 @@ def build_paired_dataset(resampled_rows):
     dataset = []
     for scenario_id in sorted(by_scenario.keys()):
         scenario = by_scenario[scenario_id]
-        refs = [row for row in scenario if as_int(row.get("S"), 0) == 1]
+        s_values = sorted(set(as_int(row.get("S"), 0) for row in scenario if as_int(row.get("S"), 0) > 0))
+        if not s_values:
+            continue
+        reference_s = s_values[0]
+        refs = [row for row in scenario if as_int(row.get("S"), 0) == reference_s]
         if not refs:
             continue
         ref_by_eta = {}
@@ -655,7 +688,7 @@ def build_paired_dataset(resampled_rows):
             ref_by_eta["%.12g" % safe_float(row.get("eta"))] = row
         high_by_run = {}
         for row in scenario:
-            if as_int(row.get("S"), 0) == 1:
+            if as_int(row.get("S"), 0) == reference_s:
                 continue
             high_by_run.setdefault(row.get("run_id"), []).append(row)
         for run_id in sorted(high_by_run.keys()):
@@ -667,17 +700,17 @@ def build_paired_dataset(resampled_rows):
                 row = high.copy()
                 row["qb_fast_MPa"] = high.get("qb_MPa", "")
                 row["qs_fast_kPa"] = high.get("qs_kPa", "")
-                row["qb_S1_MPa"] = ref.get("qb_MPa", "")
-                row["qs_S1_kPa"] = ref.get("qs_kPa", "")
+                row["qb_reference_MPa"] = ref.get("qb_MPa", "")
+                row["qs_reference_kPa"] = ref.get("qs_kPa", "")
                 row["target_residual_qb_MPa"] = "%.12g" % (
-                    safe_float(row["qb_S1_MPa"]) - safe_float(row["qb_fast_MPa"])
+                    safe_float(row["qb_reference_MPa"]) - safe_float(row["qb_fast_MPa"])
                 )
                 row["target_residual_qs_kPa"] = "%.12g" % (
-                    safe_float(row["qs_S1_kPa"]) - safe_float(row["qs_fast_kPa"])
+                    safe_float(row["qs_reference_kPa"]) - safe_float(row["qs_fast_kPa"])
                 )
                 dataset.append(row)
     if not dataset:
-        raise ValueError("No paired high-S/S=1 rows could be built")
+        raise ValueError("No paired high-S/reference-S rows could be built")
     return dataset
 
 

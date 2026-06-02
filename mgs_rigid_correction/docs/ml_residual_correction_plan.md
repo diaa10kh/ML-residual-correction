@@ -181,19 +181,19 @@ v0 = 0.020 m/s
 Total full matrix:
 
 ```text
-9 geometries × 3 densities × 3 velocities × 5 S values = 405 simulations
+3 diameters x 4 densities x 3 velocities x 5 S values = 180 simulations
 ```
 
 Number of S = 1 references:
 
 ```text
-9 × 3 × 3 = 81 reference simulations
+3 x 4 x 3 = 36 reference simulations
 ```
 
 Number of high-MGS simulations:
 
 ```text
-9 × 3 × 3 × 4 = 324 high-MGS simulations
+3 x 4 x 3 x 4 = 144 high-MGS simulations
 ```
 
 This is reasonable on the cluster because all simulations are rigid-pile simulations.
@@ -209,11 +209,11 @@ run_id = geometry_id + density_id + velocity_id + S
 Examples:
 
 ```text
-G0_DENS_HIGH_V_REF_S001
-G0_DENS_HIGH_V_REF_S010
-G0_DENS_HIGH_V_REF_S030
-G0_DENS_HIGH_V_REF_S050
-G0_DENS_HIGH_V_REF_S100
+G0_D045_DENS_HIGH_V_REF_S001
+G0_D045_DENS_HIGH_V_REF_S010
+G0_D045_DENS_HIGH_V_REF_S030
+G0_D045_DENS_HIGH_V_REF_S050
+G0_D045_DENS_HIGH_V_REF_S100
 ```
 
 Use:
@@ -225,7 +225,7 @@ scenario_id = geometry_id + density_id + velocity_id
 Example:
 
 ```text
-G0_DENS_HIGH_V_REF
+G0_D045_DENS_HIGH_V_REF
 ```
 
 All runs with the same `scenario_id` are paired together. The only difference between them is S.
@@ -333,10 +333,10 @@ target_residual_qs_kPa = qs_S1_kPa - qs_highS_kPa
 
 Each row in the ML dataset is one depth point from one high-MGS run.
 
-With the full matrix:
+With the active reduced matrix:
 
 ```text
-81 scenarios × 4 high-S values × 200 depth points = 64,800 ML rows
+36 scenarios x 4 high-S values x 200 depth points = 28,800 ML rows
 ```
 
 # 9. Input features for ML
@@ -446,7 +446,7 @@ Also create special holdout tests:
 | one unseen geometry | tests geometry transfer                      |
 | V_HIGH cases        | tests velocity sensitivity                   |
 | S = 100 cases       | tests aggressive MGS                         |
-| G0_DENS_HIGH_V_REF  | tests benchmark case against centrifuge data |
+| G0_D045_DENS_HIGH_V_REF  | tests benchmark case against centrifuge data |
 
 # 12. Metrics
 
@@ -579,7 +579,7 @@ Expected input:
 
 ```python
 case_config = {
-    "run_id": "G0_DENS_HIGH_V_REF_S100",
+    "run_id": "G0_D045_DENS_HIGH_V_REF_S100",
     "geometry_id": "G0",
     "D_m": 0.60,
     "L_m": 10.00,
@@ -596,7 +596,7 @@ case_config = {
 Expected output:
 
 ```text
-runs/G0_DENS_HIGH_V_REF_S100/G0_DENS_HIGH_V_REF_S100.inp
+runs/G0_D045_DENS_HIGH_V_REF_S100/G0_D045_DENS_HIGH_V_REF_S100.inp
 ```
 
 ## Postprocessing wrapper
@@ -629,10 +629,10 @@ For Phase 1:
 #SBATCH --array=1-45
 ```
 
-For full matrix:
+For active reduced matrix:
 
 ```bash
-#SBATCH --array=1-405
+#SBATCH --array=1-180
 ```
 
 Basic structure:
@@ -671,7 +671,7 @@ You may need to adjust the column number for `INPUT_FILE` depending on the metad
 For:
 
 ```text
-G0_DENS_HIGH_V_REF
+G0_D045_DENS_HIGH_V_REF
 ```
 
 Show:
@@ -809,12 +809,12 @@ velocity = 0.010, 0.020, 0.040 m/s,
 S = 1, 10, 30, 50, 100,
 total 45 simulations.
 
-Then support the full matrix:
-9 geometries,
-3 densities,
+Then support the active reduced matrix:
+3 diameter-only geometries,
+4 densities,
 3 velocities,
 5 S values,
-total 405 simulations.
+total 180 simulations.
 
 The code must be modular and robust to failed Abaqus runs. It must not use any S = 1 quantities as ML input features.
 ```

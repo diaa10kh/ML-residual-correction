@@ -43,9 +43,14 @@ mgs_rigid_correction/.codex_cluster_bridge/
 .env
 .venv/
 venv/
+.claude/scheduled_tasks.lock
 
 # Local manuscript/reference PDFs
 *.pdf
+
+# Large local comparison/reference workspaces outside the active workflow
+Compare_mesh_time_rigid/
+Ursprung-Simulation/
 
 # Local Abaqus user subroutines
 *.for

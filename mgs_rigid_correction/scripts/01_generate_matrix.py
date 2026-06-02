@@ -12,7 +12,7 @@ from mgs_common import ensure_project_dirs, expand_matrix, load_config, project_
 
 
 FULL_CONFIGS = {
-    "hypoplastic": project_path("configs", "matrix_full.yaml"),
+    "hypoplastic": project_path("configs", "matrix_full_hypoplastic.yaml"),
     "mcm": project_path("configs", "matrix_full_mohr_coulomb.yaml"),
 }
 

@@ -1,13 +1,16 @@
 # Full Geometry Abaqus Generator
 
-This folder contains the Abaqus/CAE Python model-building generator used by the
-`full-version` workflow. Use it when pile diameter, pile length, or penetration
-depth must change.
+This folder contains the older Abaqus/CAE Python model-building generator. It
+is not the active input-generation path. The active workflow uses checked
+length-specific `.inp` references and the scripts in `../../scripts/`.
+
+Use this generator only if a future workflow needs to rebuild the Abaqus model
+from CAE instead of patching the checked input templates.
 
 Prepare case configs and launchers without writing `.inp` files:
 
 ```powershell
-python abaqus\full_geometry_generator\02_generate_abaqus_inputs.py --metadata data\extracted\run_metadata_full.csv --run-id G0_DENS_REF_V_REF_S001 --overwrite-config
+python abaqus\full_geometry_generator\02_generate_abaqus_inputs.py --metadata data\extracted\run_metadata_full.csv --run-id G1_D060_DENS_REF_V_REF_S007 --overwrite-config
 ```
 
 Generate one representative `.inp` file per geometry and save one `.cae` file
@@ -17,8 +20,9 @@ for boundary-condition inspection:
 python abaqus\full_geometry_generator\02_generate_abaqus_inputs.py --metadata data\extracted\run_metadata_full.csv --one-per-geometry --execute --overwrite-config --save-cae first
 ```
 
-The representative selection defaults to `DENS_REF`, `V_REF`, and `S=1`, so
-this writes one input for each `G0` to `G8`.
+The representative selection defaults to `DENS_REF`, `V_REF`, and the lowest
+active scaling factor, currently `S=7`, so
+with the active reduced matrix this writes one input for each `G0` to `G2`.
 
 Only add `--execute` after the Abaqus model has been checked for the intended
 deformable-pile setup.

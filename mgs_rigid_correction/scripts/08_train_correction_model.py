@@ -13,8 +13,8 @@ Output:
   results/ml/{mcm,hypoplastic}/validation_folds.csv
   plots/ml/{mcm,hypoplastic}/
 
-Only high-S quantities are used as ML input features.  The S=1 response is
-used only to form the target residual.
+Only high-S quantities are used as ML input features.  The reference-S response
+is used only to form the target residual.
 """
 
 from __future__ import annotations
@@ -69,13 +69,15 @@ MODEL_PARAMS = dict(
 
 # One model is trained, then the predicted residual is scaled at application
 # time.  This keeps the model conservative when small S values are already
-# close to the S=1 reference.
+# close to the reference-S curve.
 S_DAMPING_ALPHA = {
     10: 1.0,
     30: 1.0,
     50: 1.0,
     100: 1.0,
 }
+
+CURRENT_REFERENCE_S = 3
 
 SOIL_MODEL_RUNS = [
     {
@@ -120,10 +122,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     feat["depth"] = df["depth"]
     feat["qb_fast"] = df["qb_fast"]
     feat["D_m"] = feature_or_default(df, "D_m")
-    feat["penetration_m"] = feature_or_default(df, "penetration_m")
-    feat["penetration_over_D"] = feature_or_default(df, "penetration_over_D")
     feat["depth_over_D"] = feature_or_default(df, "depth_over_D")
-    feat["depth_over_penetration"] = feature_or_default(df, "depth_over_penetration")
 
     if "qb_fast_grad" in df.columns:
         feat["qb_fast_grad"] = df["qb_fast_grad"].fillna(0.0)
@@ -138,7 +137,6 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     feat["grad_x_S"] = feat["qb_fast_grad"] * log_s
     feat["grad_x_ID"] = feat["qb_fast_grad"] * df["ID"]
     feat["S_x_depth_over_D"] = log_s * feat["depth_over_D"]
-    feat["S_x_penetration_over_D"] = log_s * feat["penetration_over_D"]
 
     return feat.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
@@ -154,10 +152,7 @@ FEATURE_NAMES = list(
                 "qb_fast": [10.0],
                 "qb_fast_grad": [1.5],
                 "D_m": [0.60],
-                "penetration_m": [9.0],
-                "penetration_over_D": [15.0],
                 "depth_over_D": [8.333333],
-                "depth_over_penetration": [0.555556],
             }
         )
     ).columns
@@ -337,7 +332,6 @@ def save_robustness_validations(df_train_pool: pd.DataFrame, full_df: pd.DataFra
     for group_col, strategy, output_name in [
         ("geometry_id", "leave-one-geometry-out", "validation_leave_one_geometry.csv"),
         ("D_m", "leave-one-diameter-out", "validation_leave_one_diameter.csv"),
-        ("penetration_m", "leave-one-penetration-out", "validation_leave_one_penetration.csv"),
     ]:
         summary = holdout_validation_summary(df_train_pool, full_df, "res_qb", group_col, strategy, output_name)
         if summary:
@@ -386,7 +380,7 @@ def compute_and_save_normalisation(df_train: pd.DataFrame, meta_path: Path):
     )
     meta["robustness_validation"] = (
         "Full-version datasets additionally write leave-one-geometry-out, "
-        "leave-one-diameter-out, and leave-one-penetration-out summaries when "
+        "and leave-one-diameter-out summaries when "
         "the required geometry columns are available."
     )
     meta["correction_damping_alpha"] = S_DAMPING_ALPHA
@@ -471,6 +465,20 @@ def plot_number(value) -> str:
     return f"{value:g}"
 
 
+def reference_label() -> str:
+    return f"Reference (S={plot_number(CURRENT_REFERENCE_S)})"
+
+
+def reference_s_from_meta(meta_path: Path) -> int:
+    if not meta_path.exists():
+        return CURRENT_REFERENCE_S
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        return int(meta.get("S_ref", CURRENT_REFERENCE_S))
+    except (OSError, ValueError, TypeError):
+        return CURRENT_REFERENCE_S
+
+
 def finite_vmax(values, default: float = 1.0) -> float:
     finite = np.asarray(values, dtype=float)
     finite = finite[np.isfinite(finite)]
@@ -546,7 +554,7 @@ def plot_correction_curves(df_in: pd.DataFrame, model_qb, n: int = 20):
             color="#2c3e50",
             lw=2.0,
             alpha=0.95,
-            label="Reference (S=1)",
+            label=reference_label(),
         )
         ax.invert_yaxis()
         ax.set_xlabel("Base resistance qb [MPa]")
@@ -581,7 +589,7 @@ def plot_test_correction_curves(df_in: pd.DataFrame, model_qb):
     fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 5 * nrows))
     axes_flat = np.ravel(axes) if hasattr(axes, "ravel") else np.asarray([axes])
     fig.suptitle(
-        f"Correction curves - {len(scenarios)} grouped out-of-fold validation scenarios (Reference: S=1)\n"
+        f"Correction curves - {len(scenarios)} grouped out-of-fold validation scenarios ({reference_label()})\n"
         "Each scenario is predicted by a model trained without that scenario",
         fontsize=13,
         fontweight="bold",
@@ -617,7 +625,7 @@ def plot_test_correction_curves(df_in: pd.DataFrame, model_qb):
             color="#2c3e50",
             lw=2.0,
             alpha=0.95,
-            label="Reference (S=1)",
+            label=reference_label(),
         )
         ax.invert_yaxis()
         ax.set_xlabel("Base resistance qb [MPa]")
@@ -801,7 +809,7 @@ def plot_publication_correction_curve(df_in: pd.DataFrame, model_qb):
             lw=2.5,
             label="Corrected",
         )
-        ax.plot(sub["qb_ref"], sub["depth"], "-", color="#2c3e50", lw=2.0, alpha=0.95, label="Reference (S=1)")
+        ax.plot(sub["qb_ref"], sub["depth"], "-", color="#2c3e50", lw=2.0, alpha=0.95, label=reference_label())
         ax.invert_yaxis()
         ax.set_xlabel("Base resistance qb [MPa]", fontsize=11)
         ax.set_ylabel("Depth [m]", fontsize=11)
@@ -926,7 +934,7 @@ def plot_residual_scatter(
 
 
 def plot_predicted_vs_actual(df_in: pd.DataFrame, model_qb):
-    """Plot corrected qb directly against the S=1 reference qb."""
+    """Plot corrected qb directly against the reference qb."""
     df = corrected_frame(df_in, model_qb)
     s_values = sorted(df["S"].dropna().unique())
     if not s_values:
@@ -936,7 +944,7 @@ def plot_predicted_vs_actual(df_in: pd.DataFrame, model_qb):
     axes = np.ravel(axes) if hasattr(axes, "ravel") else np.asarray([axes])
     fig.suptitle(
         "Predicted vs Actual Base Resistance qb\n"
-        f"{validation_context(df)}  |  Actual = S=1 reference",
+        f"{validation_context(df)}  |  Actual = {reference_label()}",
         fontsize=12,
         fontweight="bold",
     )
@@ -969,7 +977,7 @@ def plot_predicted_vs_actual(df_in: pd.DataFrame, model_qb):
         ax.set_xlim(0, limit)
         ax.set_ylim(0, limit)
         ax.set_aspect("equal", adjustable="box")
-        ax.set_xlabel("Actual qb: reference S=1 [MPa]")
+        ax.set_xlabel(f"Actual qb: reference S={plot_number(CURRENT_REFERENCE_S)} [MPa]")
         ax.set_ylabel("Predicted qb [MPa]")
         ax.set_title(f"S={plot_number(s_value)}")
         ax.grid(True, alpha=0.3)
@@ -1277,10 +1285,7 @@ def plot_correlation_matrix(df: pd.DataFrame, model_qb):
     feat["qb fast grad"] = df["qb_fast_grad"] if "qb_fast_grad" in df.columns else 0.0
     for column, label in [
         ("D_m", "Diameter D"),
-        ("penetration_m", "Penetration"),
-        ("penetration_over_D", "Penetration/D"),
         ("depth_over_D", "Depth/D"),
-        ("depth_over_penetration", "Depth/Penetration"),
     ]:
         if column in df.columns:
             feat[label] = pd.to_numeric(df[column], errors="coerce")
@@ -1353,20 +1358,21 @@ def save_grouped_metrics(df_test: pd.DataFrame):
 
 
 def train_soil_model(run):
-    global RESULTS_DIR, PLOTS_DIR
+    global RESULTS_DIR, PLOTS_DIR, CURRENT_REFERENCE_S
 
     label = run["label"]
     data_path = run["data_path"]
     meta_path = run["meta_path"]
     RESULTS_DIR = run["results_dir"]
     PLOTS_DIR = run["plots_dir"]
+    CURRENT_REFERENCE_S = reference_s_from_meta(meta_path)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 
     print("")
     print("=" * 60)
     print(f"MGS residual correction training - {label}")
-    print("Reference: S=1")
+    print(f"Reference: S={plot_number(CURRENT_REFERENCE_S)}")
     print("=" * 60)
     print(f"DATASET: {data_path}")
     print(f"RESULTS: {RESULTS_DIR}")

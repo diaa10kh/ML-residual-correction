@@ -1,10 +1,9 @@
 """
-Generate one reference-input variant per planned pile geometry.
+Generate scaled reference-input variants for the non-reference pile diameters.
 
-This script patches the checked MCM reference input directly. It intentionally
-keeps the soil mesh and contact definitions unchanged, and changes the pile and
-press diameters plus the assembly/press kinematics needed to keep the pile top
-tied to the press and the pile tip at the original starting elevation.
+This script patches the checked MCM reference inputs directly. It intentionally
+keeps the soil mesh, contact definitions, pile length, assembly translations,
+and press displacement unchanged. Only the pile and press diameters are scaled.
 """
 
 from __future__ import annotations
@@ -18,12 +17,12 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 
-DEFAULT_REFERENCE = PROJECT_ROOT / "reference_inputs" / "CPT_90_MCM_einpressen_Voll_S001.inp"
-DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "matrix_full.yaml"
+REFERENCE_INPUTS = PROJECT_ROOT / "reference_inputs"
+DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "matrix_full_hypoplastic.yaml"
 DEFAULT_OUTPUT = PROJECT_ROOT / "reference_inputs" / "generated_pile_geometries"
+DEFAULT_REFERENCE = REFERENCE_INPUTS / "Pile_11_m_einpressen_Voll_S001.inp"
 
 REFERENCE_D_M = 0.60
-REFERENCE_L_M = 12.0
 
 
 def fmt(value: float) -> str:
@@ -107,10 +106,9 @@ def patch_part_nodes(
     return out
 
 
-def patch_pile_and_press_nodes(lines: list[str], D_m: float, L_m: float) -> list[str]:
+def patch_pile_and_press_nodes(lines: list[str], D_m: float) -> list[str]:
     radius_scale = D_m / REFERENCE_D_M
-    length_scale = L_m / REFERENCE_L_M
-    lines = patch_part_nodes(lines, "Pile", radius_scale=radius_scale, z_scale=length_scale)
+    lines = patch_part_nodes(lines, "Pile", radius_scale=radius_scale, z_scale=1.0)
     lines = patch_part_nodes(lines, "Presse", radius_scale=radius_scale, z_scale=1.0)
     return lines
 
@@ -188,10 +186,10 @@ def patch_step_kinematics(lines: list[str], penetration_m: float, velocity_m_per
     return out
 
 
-def add_header(lines: list[str], geometry: dict, velocity_m_per_s: float) -> list[str]:
+def add_header(lines: list[str], geometry: dict, velocity_m_per_s: float, source_name: str) -> list[str]:
     header = [
         "**",
-        "** Generated pile-geometry variant from CPT_90_MCM_einpressen_Voll_S001.inp",
+        f"** Generated pile-geometry variant from {source_name}",
         f"** geometry_id={geometry['geometry_id']}",
         f"** D_m={fmt(geometry['D_m'])}",
         f"** L_m={fmt(geometry['L_m'])}",
@@ -206,40 +204,55 @@ def add_header(lines: list[str], geometry: dict, velocity_m_per_s: float) -> lis
     return lines[:4] + header + lines[4:]
 
 
-def patch_geometry(reference_lines: list[str], geometry: dict, velocity_m_per_s: float) -> list[str]:
-    pile_tip_z = 27.0
-    pile_top_z = pile_tip_z + geometry["L_m"]
-    lines = patch_pile_and_press_nodes(reference_lines, geometry["D_m"], geometry["L_m"])
-    lines = patch_instance_translation(lines, "Pile-1", pile_tip_z)
-    lines = patch_instance_translation(lines, "Presse-1", pile_top_z)
-    lines = patch_step_kinematics(lines, geometry["penetration_m"], velocity_m_per_s)
-    return add_header(lines, geometry, velocity_m_per_s)
+def patch_geometry(
+    reference_lines: list[str],
+    geometry: dict,
+    velocity_m_per_s: float,
+    source_name: str,
+) -> list[str]:
+    lines = patch_pile_and_press_nodes(reference_lines, geometry["D_m"])
+    return add_header(lines, geometry, velocity_m_per_s, source_name)
 
 
 def output_name(geometry: dict) -> str:
-    D = str(geometry["D_m"]).replace(".", "p")
-    L = str(round(geometry["L_m"], 3)).replace(".", "p")
-    P = str(round(geometry["penetration_m"], 3)).replace(".", "p")
-    return f"CPT_90_MCM_{geometry['geometry_id']}_D{D}_L{L}_P{P}_S001.inp"
+    D = int(round(100.0 * geometry["D_m"]))
+    return f"CPT_90_MCM_{geometry['geometry_id']}_D{D:03d}_S007.inp"
+
+
+def reference_path_for_geometry(geometry: dict, reference_path: Path) -> Path:
+    return reference_path
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate 9 pile-only geometry input variants.")
-    parser.add_argument("--reference", default=str(DEFAULT_REFERENCE))
+    parser = argparse.ArgumentParser(description="Generate pile-only geometry input variants from the active matrix.")
+    parser.add_argument("--reference-inp", default=str(DEFAULT_REFERENCE))
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--velocity-m-per-s", type=float, default=0.5)
     args = parser.parse_args()
 
-    reference = Path(args.reference)
+    reference_path = Path(args.reference_inp)
+    if not reference_path.exists():
+        raise FileNotFoundError(reference_path)
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    for stale in output_dir.glob("CPT_90_MCM_G*_D*_L*_P*_S*.inp"):
+        stale.unlink()
+    for stale in output_dir.glob("CPT_90_MCM_G*_D*_S*.inp"):
+        stale.unlink()
 
-    reference_lines = reference.read_text(encoding="utf-8", errors="ignore").splitlines()
+    reference_cache: dict[Path, list[str]] = {}
     geometries = planned_geometries(Path(args.config))
     written = []
     for geometry in geometries:
-        patched = patch_geometry(reference_lines, geometry, args.velocity_m_per_s)
+        if abs(float(geometry["D_m"]) - REFERENCE_D_M) <= 1.0e-9:
+            print(f"Using reference diameter directly for {geometry['geometry_id']} D={fmt(geometry['D_m'])}; no scaled template written")
+            continue
+        reference = reference_path_for_geometry(geometry, reference_path)
+        if reference not in reference_cache:
+            reference_cache[reference] = reference.read_text(encoding="utf-8", errors="ignore").splitlines()
+        patched = patch_geometry(reference_cache[reference], geometry, args.velocity_m_per_s, reference.name)
         output = output_dir / output_name(geometry)
         output.write_text("\n".join(patched) + "\n", encoding="utf-8")
         written.append(output)
